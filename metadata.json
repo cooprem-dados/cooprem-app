@@ -1,0 +1,7 @@
+{
+  "name": "Sicoob Cooprem - Registro de Visitas",
+  "description": "Um aplicativo para gerentes de relacionamento do Sicoob Cooprem registrarem suas visitas a cooperados. O app permite identificar cooperados, capturar geolocalização, resumir a visita e listar produtos discutidos.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
