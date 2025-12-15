@@ -4,20 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sicoob Cooprem - Visitas</title>
-    <!-- Tailwind CSS via CDN para estilização rápida -->
+    
+    <!-- Tailwind CSS via CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <!-- Polyfills essenciais para bibliotecas como ExcelJS funcionarem no navegador -->
+    <script>
+      window.global = window;
+      window.process = { env: {} };
+    </script>
+    
+    <!-- Carrega a versão compilada para navegador do Buffer -->
+    <script src="https://unpkg.com/buffer@6.0.3/bundles/buffer.js"></script>
+    
+    <script>
+      // Associa o buffer carregado ao objeto global window
+      if (window.buffer) {
+        window.Buffer = window.buffer.Buffer;
+      }
+    </script>
+
     <style>
       body { overscroll-behavior-y: contain; }
       .leaflet-container { border-radius: 0.5rem; }
     </style>
-    <!-- Polyfill para ExcelJS -->
-    <script src="https://unpkg.com/buffer@6.0.3/index.js"></script>
-    <script>
-      window.Buffer = window.Buffer || buffer.Buffer;
-      window.process = { env: {} };
-    </script>
   <script type="importmap">
 {
   "imports": {
@@ -25,6 +35,7 @@
     "react/": "https://esm.sh/react@^19.2.3/",
     "firebase/": "https://esm.sh/firebase@^12.6.0/",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "leaflet/": "https://esm.sh/leaflet@^1.9.4/",
     "exceljs": "https://esm.sh/exceljs@^4.4.0",
     "file-saver": "https://esm.sh/file-saver@^2.0.5",
     "jspdf": "https://esm.sh/jspdf@^3.0.4",
@@ -32,7 +43,8 @@
     "vite": "https://esm.sh/vite@^7.2.7",
     "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
     "path": "https://esm.sh/path@^0.12.7",
-    "url": "https://esm.sh/url@^0.11.4"
+    "url": "https://esm.sh/url@^0.11.4",
+    "leaflet": "https://esm.sh/leaflet@^1.9.4"
   }
 }
 </script>
@@ -40,8 +52,6 @@
 </head>
   <body class="bg-gray-100">
     <div id="root"></div>
-    <!-- Leaflet JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script type="module" src="/src/main.tsx"></script>
   <script type="module" src="/index.tsx"></script>
 </body>
