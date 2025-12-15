@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sicoob Cooprem - Visitas</title>
+    
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Polyfills essenciais para bibliotecas como ExcelJS funcionarem no navegador -->
+    <script>
+      window.global = window;
+      window.process = { env: {} };
+    </script>
+    
+    <!-- Carrega a versão compilada para navegador do Buffer -->
+    <script src="https://unpkg.com/buffer@6.0.3/bundles/buffer.js"></script>
+    
+    <script>
+      // Associa o buffer carregado ao objeto global window
+      if (window.buffer) {
+        window.Buffer = window.buffer.Buffer;
+      }
+    </script>
+
+    <style>
+      body { overscroll-behavior-y: contain; }
+      .leaflet-container { border-radius: 0.5rem; }
+    </style>
+
+<link rel="stylesheet" href="/index.css">
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "firebase/": "https://esm.sh/firebase@^12.6.0/",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "leaflet/": "https://esm.sh/leaflet@^1.9.4/",
+    "exceljs": "https://esm.sh/exceljs@^4.4.0",
+    "file-saver": "https://esm.sh/file-saver@^2.0.5",
+    "jspdf": "https://esm.sh/jspdf@^3.0.4",
+    "jspdf-autotable": "https://esm.sh/jspdf-autotable@^5.0.2",
+    "vite": "https://esm.sh/vite@^7.2.7",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "path": "https://esm.sh/path@^0.12.7",
+    "url": "https://esm.sh/url@^0.11.4",
+    "leaflet": "https://esm.sh/leaflet@^1.9.4"
+  }
+}
+</script>
+  <script type="module" crossorigin src="/cooprem-app/assets/index-D_RpXkTP.js"></script>
+  <link rel="modulepreload" crossorigin href="/cooprem-app/assets/vendor-BdKdDv6H.js">
+  <link rel="modulepreload" crossorigin href="/cooprem-app/assets/utils-BrrqWZwR.js">
+  <link rel="stylesheet" crossorigin href="/cooprem-app/assets/index-CIGW-MKW.css">
+</head>
+  <body class="bg-gray-100">
+    <div id="root"></div>
+</body>
+</html>
