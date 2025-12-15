@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Estilos globais */
+body { 
+  overscroll-behavior-y: contain;
+  background-color: #f3f4f6; /* bg-gray-100 fallback */
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.leaflet-container { 
+  border-radius: 0.5rem; 
+}

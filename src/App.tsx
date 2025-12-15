@@ -5,9 +5,8 @@ import Dashboard from './components/Dashboard';
 import DeveloperDashboard from './components/DeveloperDashboard';
 import PasswordFormModal from './components/PasswordFormModal';
 import { auth, db, firebaseConfig } from './firebaseConfig';
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
-import { collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, where, getDoc, setDoc } from 'firebase/firestore';
-import { initializeApp, deleteApp, getApps, getApp } from 'firebase/app';
+import firebase from 'firebase/compat/app';
+import 'firebase/compat/auth';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -23,10 +22,10 @@ const App: React.FC = () => {
     try {
       if (user.role === 'Desenvolvedor') {
         const [uSnap, cSnap, vSnap, svSnap] = await Promise.all([
-          getDocs(collection(db, 'users')),
-          getDocs(collection(db, 'cooperados')),
-          getDocs(collection(db, 'visits')),
-          getDocs(collection(db, 'suggestedVisits'))
+          db.collection('users').get(),
+          db.collection('cooperados').get(),
+          db.collection('visits').get(),
+          db.collection('suggestedVisits').get()
         ]);
         setUsers(uSnap.docs.map(d => ({ ...d.data(), id: d.id } as User)));
         setCooperados(cSnap.docs.map(d => ({ ...d.data(), id: d.id } as Cooperado)));
@@ -34,10 +33,10 @@ const App: React.FC = () => {
         setSuggestedVisits(svSnap.docs.map(d => { const dt = d.data(); return { ...dt, id: d.id, suggestedAt: (dt.suggestedAt as any).toDate() } as SuggestedVisit; }));
       } else {
         const [cSnap, vSnap, svSnap, uSnap] = await Promise.all([
-          getDocs(query(collection(db, 'cooperados'))),
-          getDocs(query(collection(db, 'visits'), where('manager.id', '==', user.id))),
-          getDocs(query(collection(db, 'suggestedVisits'), where('manager.id', '==', user.id))),
-          getDocs(collection(db, 'users'))
+          db.collection('cooperados').get(),
+          db.collection('visits').where('manager.id', '==', user.id).get(),
+          db.collection('suggestedVisits').where('manager.id', '==', user.id).get(),
+          db.collection('users').get()
         ]);
         setUsers(uSnap.docs.map(d => ({ ...d.data(), id: d.id } as User)));
         setCooperados(cSnap.docs.map(d => ({ ...d.data(), id: d.id } as Cooperado)));
@@ -48,47 +47,61 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, async (u) => {
+    return auth.onAuthStateChanged(async (u) => {
       if (u) {
-        const snap = await getDoc(doc(db, 'users', u.uid));
-        if (snap.exists()) {
+        const snap = await db.collection('users').doc(u.uid).get();
+        if (snap.exists) {
           const userData = { ...snap.data(), id: u.uid } as User;
           setCurrentUser(userData);
           await fetchData(userData);
-        } else { await signOut(auth); }
+        } else { await auth.signOut(); }
       } else { setCurrentUser(null); setLoading(false); }
     });
   }, [fetchData]);
 
-  const handleLogin = async (e: string, p: string) => { try { await signInWithEmailAndPassword(auth, e, p); return true; } catch { return false; } };
-  const handleLogout = () => signOut(auth);
+  const handleLogin = async (e: string, p: string) => { try { await auth.signInWithEmailAndPassword(e, p); return true; } catch { return false; } };
+  const handleLogout = () => auth.signOut();
 
   const addVisit = async (v: Omit<Visit, 'id' | 'manager'>) => {
     if (!currentUser) return;
     const visitData = { ...v, manager: { id: currentUser.id, name: currentUser.name, agency: currentUser.agency } };
-    const ref = await addDoc(collection(db, 'visits'), visitData);
+    const ref = await db.collection('visits').add(visitData);
     setVisits(p => [...p, { ...visitData, id: ref.id }]);
     
     // Remove sugestão se existir
     const coopDoc = 'document' in v.cooperado ? v.cooperado.document : '';
     const sugg = suggestedVisits.find(sv => sv.cooperado.document === coopDoc && sv.manager.id === currentUser.id);
-    if(sugg) await deleteDoc(doc(db, 'suggestedVisits', sugg.id));
+    if(sugg) await db.collection('suggestedVisits').doc(sugg.id).delete();
   };
 
   const addUser = async (u: User) => {
     let secApp;
     try {
-      secApp = getApps().length > 1 ? getApps()[1] : initializeApp(firebaseConfig, "Secondary");
-      const secAuth = getAuth(secApp);
-      const cred = await createUserWithEmailAndPassword(secAuth, u.email, u.password);
-      await setDoc(doc(db, 'users', cred.user.uid), { ...u, password: u.password });
-      setUsers(p => [...p, { ...u, id: cred.user.uid }]);
-      await signOut(secAuth);
-      await deleteApp(secApp);
-    } catch (e: any) { alert("Erro ao criar usuário: " + e.message); if(secApp) deleteApp(secApp); }
+      // Create a secondary app to create user without logging out current user
+      const appName = "Secondary";
+      const existingApp = firebase.apps.find(a => a.name === appName);
+      secApp = existingApp || firebase.initializeApp(firebaseConfig, appName);
+      const secAuth = secApp.auth();
+      const cred = await secAuth.createUserWithEmailAndPassword(u.email, u.password);
+      if (cred.user) {
+        await db.collection('users').doc(cred.user.uid).set({ ...u, password: u.password });
+        setUsers(p => [...p, { ...u, id: cred.user!.uid }]);
+      }
+      await secAuth.signOut();
+      await secApp.delete();
+    } catch (e: any) { alert("Erro ao criar usuário: " + e.message); if(secApp) secApp.delete(); }
   };
 
-  if (loading) return <div className="h-screen flex items-center justify-center bg-[#005058] text-white">Carregando...</div>;
+  // Uso style inline para garantir visibilidade mesmo se o Tailwind falhar
+  if (loading) return (
+    <div 
+      className="h-screen flex items-center justify-center bg-[#005058] text-white"
+      style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#005058', color: 'white' }}
+    >
+      Carregando...
+    </div>
+  );
+
   if (!currentUser) return <LoginScreen onLogin={handleLogin} />;
 
   return (
@@ -97,14 +110,14 @@ const App: React.FC = () => {
         <DeveloperDashboard 
           users={users} cooperados={cooperados} visits={visits} suggestedVisits={suggestedVisits}
           onLogout={handleLogout}
-          onAddSuggestion={async (s) => { const r = await addDoc(collection(db, 'suggestedVisits'), { ...s, suggestedAt: new Date() }); setSuggestedVisits(p => [...p, { ...s, id: r.id, suggestedAt: new Date() }]); }}
-          onRemoveSuggestion={async (id) => { await deleteDoc(doc(db, 'suggestedVisits', id)); setSuggestedVisits(p => p.filter(x => x.id !== id)); }}
+          onAddSuggestion={async (s) => { const r = await db.collection('suggestedVisits').add({ ...s, suggestedAt: new Date() }); setSuggestedVisits(p => [...p, { ...s, id: r.id, suggestedAt: new Date() }]); }}
+          onRemoveSuggestion={async (id) => { await db.collection('suggestedVisits').doc(id).delete(); setSuggestedVisits(p => p.filter(x => x.id !== id)); }}
           onAddUser={addUser}
-          onUpdateUser={async (id, d) => { await updateDoc(doc(db, 'users', id), d); setUsers(p => p.map(u => u.id === id ? { ...u, ...d } : u)); }}
-          onDeleteUser={async (id) => { await deleteDoc(doc(db, 'users', id)); setUsers(p => p.filter(u => u.id !== id)); }}
-          onAddCooperado={async (c) => { const r = await addDoc(collection(db, 'cooperados'), c); setCooperados(p => [...p, { ...c, id: r.id }]); }}
-          onUpdateCooperado={async (id, c) => { await updateDoc(doc(db, 'cooperados', id), c); setCooperados(p => p.map(x => x.id === id ? { ...x, ...c } : x)); }}
-          onDeleteCooperado={async (id) => { await deleteDoc(doc(db, 'cooperados', id)); setCooperados(p => p.filter(x => x.id !== id)); }}
+          onUpdateUser={async (id, d) => { await db.collection('users').doc(id).update(d); setUsers(p => p.map(u => u.id === id ? { ...u, ...d } : u)); }}
+          onDeleteUser={async (id) => { await db.collection('users').doc(id).delete(); setUsers(p => p.filter(u => u.id !== id)); }}
+          onAddCooperado={async (c) => { const r = await db.collection('cooperados').add(c); setCooperados(p => [...p, { ...c, id: r.id }]); }}
+          onUpdateCooperado={async (id, c) => { await db.collection('cooperados').doc(id).update(c); setCooperados(p => p.map(x => x.id === id ? { ...x, ...c } : x)); }}
+          onDeleteCooperado={async (id) => { await db.collection('cooperados').doc(id).delete(); setCooperados(p => p.filter(x => x.id !== id)); }}
           onOpenChangePassword={setPasswordModalUser}
         />
       ) : (

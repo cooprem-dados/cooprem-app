@@ -1,7 +1,5 @@
 import React, { useState } from 'react';
 import Logo from './Logo';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebaseConfig';
 
 interface LoginScreenProps {
@@ -32,20 +30,23 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
 
     setIsLoading(true);
     try {
-        const userCredential = await createUserWithEmailAndPassword(auth, "genildo.filho@sicoob.com.br", "123456");
-        const uid = userCredential.user.uid;
+        const userCredential = await auth.createUserWithEmailAndPassword("genildo.filho@sicoob.com.br", "123456");
+        const uid = userCredential.user?.uid;
 
-        await setDoc(doc(db, 'users', uid), {
-            name: "Genildo Filho",
-            email: "genildo.filho@sicoob.com.br",
-            role: "Desenvolvedor",
-            agency: "Sede",
-            password: "123456" 
-        });
-
-        alert("Usuário Admin criado com sucesso! Tente fazer login agora.");
-        setEmail("genildo.filho@sicoob.com.br");
-        setPassword("123456");
+        if (uid) {
+            await db.collection('users').doc(uid).set({
+                name: "Genildo Filho",
+                email: "genildo.filho@sicoob.com.br",
+                role: "Desenvolvedor",
+                agency: "Sede",
+                password: "123456" 
+            });
+            alert("Usuário Admin criado com sucesso! Tente fazer login agora.");
+            setEmail("genildo.filho@sicoob.com.br");
+            setPassword("123456");
+        } else {
+            throw new Error("Falha ao obter UID do usuário criado.");
+        }
     } catch (err: any) {
         console.error(err);
         if (err.code === 'auth/email-already-in-use') {
