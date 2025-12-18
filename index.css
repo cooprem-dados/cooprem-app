@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { 
+  overscroll-behavior-y: contain;
+  background-color: #f3f4f6;
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+.leaflet-container { 
+  border-radius: 0.75rem;
+  z-index: 1;
+}

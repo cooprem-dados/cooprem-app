@@ -1,3 +1,4 @@
+
 export enum Product {
   Consorcio = 'Consórcio',
   Seguro = 'Seguro',
@@ -13,7 +14,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  password: string;
+  password?: string;
   role: string;
   agency: string;
 }
@@ -45,13 +46,13 @@ export interface Visit {
   location: Geolocation | null;
   summary: string;
   products: ProductDetail[];
-  manager: Pick<User, 'id' | 'name' | 'agency'>;
+  manager: { id: string; name: string; agency: string };
 }
 
 export interface SuggestedVisit {
   id: string;
   cooperado: Cooperado;
-  manager: Pick<User, 'id' | 'name' | 'agency'>;
+  manager: { id: string; name: string; agency: string };
   suggestedAt: Date;
   suggestedBy: string; 
   reason: string;
