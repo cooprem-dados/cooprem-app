@@ -20,10 +20,12 @@ const App: React.FC = () => {
   const [suggestedVisits, setSuggestedVisits] = useState<SuggestedVisit[]>([]);
   const [passwordModalUser, setPasswordModalUser] = useState<User | null>(null);
 
+  const hasAIKey = !!process.env.API_KEY;
+
   const fetchData = useCallback(async (user: User) => {
     setLoading(true);
     try {
-      const isDev = user.role === 'Desenvolvedor';
+      const isDev = user.role === 'Desenvolvedor' || user.role === 'Admin';
       const [uSnap, cSnap, vSnap, svSnap] = await Promise.all([
         db.collection('users').get(),
         db.collection('cooperados').get(),
@@ -105,11 +107,16 @@ const App: React.FC = () => {
   };
 
   const handleGenerateAISuggestions = async () => {
-    if (!currentUser || !process.env.API_KEY) return;
+    if (!hasAIKey) {
+      alert("IA não configurada: A chave de API (API_KEY) não foi encontrada nas variáveis de ambiente.");
+      return;
+    }
+    if (!currentUser) return;
+
     setLoading(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `Analise estes cooperados e sugira 3 visitas estratégicas: ${JSON.stringify(cooperados.slice(0, 15).map(c => ({n: c.name, d: c.document})))}. Retorne JSON: [{"document": "...", "reason": "..."}]`;
+      const prompt = `Analise estes cooperados e sugira 3 visitas estratégicas: ${JSON.stringify(cooperados.slice(0, 15).map(c => ({n: c.name, d: c.document})))}. Retorne APENAS o JSON no formato: [{"document": "...", "reason": "..."}]`;
       
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
@@ -146,8 +153,10 @@ const App: React.FC = () => {
           } as SuggestedVisit]);
         }
       }
+      alert("Sugestões geradas com sucesso!");
     } catch (e) {
       console.error("Erro IA:", e);
+      alert("Falha ao gerar sugestões. Verifique sua chave API.");
     } finally {
       setLoading(false);
     }
@@ -156,21 +165,24 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="h-screen flex flex-col items-center justify-center bg-[#005058] text-white">
       <Logo style={{ height: '60px', marginBottom: '20px', filter: 'brightness(1.5)' }} />
-      <p className="font-bold animate-pulse">Sicoob Cooprem - Carregando...</p>
+      <p className="font-bold animate-pulse">Sicoob Cooprem - Sincronizando...</p>
     </div>
   );
 
   if (!currentUser) return <LoginScreen onLogin={handleLogin} />;
 
+  const isDev = currentUser.role === 'Desenvolvedor' || currentUser.role === 'Admin';
+
   return (
     <div className="min-h-screen bg-gray-100">
-      {currentUser.role === 'Desenvolvedor' ? (
+      {isDev ? (
         <DeveloperDashboard 
           users={users} 
           cooperados={cooperados} 
           visits={visits} 
           suggestedVisits={suggestedVisits}
           onLogout={() => auth.signOut()}
+          hasAIKey={hasAIKey}
           onAddUser={async (u) => {
             const secApp = firebase.initializeApp(firebaseConfig, `Sec_${Date.now()}`);
             const cred = await secApp.auth().createUserWithEmailAndPassword(u.email, u.password || '123456');
@@ -178,7 +190,7 @@ const App: React.FC = () => {
             setUsers(p => [...p, { ...u, id: cred.user!.uid }]);
             await secApp.delete();
           }}
-          onDeleteUser={async (id) => { if(confirm("Remover?")) { await db.collection('users').doc(id).delete(); setUsers(p => p.filter(u => u.id !== id)); } }}
+          onDeleteUser={async (id) => { if(confirm("Remover acesso?")) { await db.collection('users').doc(id).delete(); setUsers(p => p.filter(u => u.id !== id)); } }}
           onAddCooperado={async (c) => { const r = await db.collection('cooperados').add(c); setCooperados(p => [...p, { ...c, id: r.id }]); }}
           onGenerateAISuggestions={handleGenerateAISuggestions}
           onOpenChangePassword={setPasswordModalUser}
@@ -186,7 +198,7 @@ const App: React.FC = () => {
           onRemoveSuggestion={async (id) => { await db.collection('suggestedVisits').doc(id).delete(); setSuggestedVisits(p => p.filter(x => x.id !== id)); }}
           onUpdateUser={async (id, d) => { await db.collection('users').doc(id).update(d); setUsers(p => p.map(u => u.id === id ? { ...u, ...d } : u)); }}
           onUpdateCooperado={async (id, c) => { await db.collection('cooperados').doc(id).update(c); setCooperados(p => p.map(x => x.id === id ? { ...x, ...c } : x)); }}
-          onDeleteCooperado={async (id) => { if(confirm("Excluir?")) { await db.collection('cooperados').doc(id).delete(); setCooperados(p => p.filter(x => x.id !== id)); } }}
+          onDeleteCooperado={async (id) => { if(confirm("Excluir cooperado?")) { await db.collection('cooperados').doc(id).delete(); setCooperados(p => p.filter(x => x.id !== id)); } }}
         />
       ) : (
         <Dashboard 
