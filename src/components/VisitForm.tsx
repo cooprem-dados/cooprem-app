@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Cooperado, Visit, Product } from '../types';
 import { useGeolocation } from '../hooks/useGeolocation';
 
@@ -10,6 +9,8 @@ interface VisitFormProps {
   prefilledCooperado: Cooperado | null;
 }
 
+type AnyCooperado = any;
+
 const VisitForm: React.FC<VisitFormProps> = ({ cooperados, addVisit, onClose, prefilledCooperado }) => {
   const [coopId, setCoopId] = useState(prefilledCooperado?.id || '');
   const [summary, setSummary] = useState('');
@@ -17,24 +18,123 @@ const VisitForm: React.FC<VisitFormProps> = ({ cooperados, addVisit, onClose, pr
   const { location, loading: geoLoading, getLocation } = useGeolocation();
   const [submitting, setSubmitting] = useState(false);
 
+  // Autocomplete states
+  const [coopSearch, setCoopSearch] = useState('');
+  const [showCoopOptions, setShowCoopOptions] = useState(false);
+  const coopBoxRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => { getLocation(); }, [getLocation]);
 
+  // Helpers for search
+  const normalizeText = (v: any) =>
+    String(v ?? '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  const normalizeDoc = (v: any) => String(v ?? '').replace(/\D/g, '');
+
+  const cooperadosNormalized = useMemo(() => {
+    return (cooperados || []).map((c: AnyCooperado) => {
+      const displayName = c.name ?? c.nome ?? '';
+      const displayDoc = c.document ?? c.documento ?? '';
+      return {
+        ...c,
+        displayName,
+        displayDoc,
+        nameKey: normalizeText(displayName),
+        docKey: normalizeDoc(displayDoc),
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cooperados]);
+
+  const filteredOptions = useMemo(() => {
+    const raw = coopSearch.trim();
+    const qName = normalizeText(raw);
+    const qDoc = normalizeDoc(raw);
+
+    // If empty, show initial slice
+    if (!qName && !qDoc) return cooperadosNormalized.slice(0, 30);
+
+    return cooperadosNormalized
+      .filter((c: AnyCooperado) => {
+        const byName = qName ? String(c.nameKey || '').includes(qName) : false;
+        const byDoc = qDoc ? String(c.docKey || '').includes(qDoc) : false;
+        return byName || byDoc;
+      })
+      .slice(0, 30);
+  }, [coopSearch, cooperadosNormalized]);
+
+  // If prefilled cooperado, lock input and show value as "nome / documento"
+  useEffect(() => {
+    if (prefilledCooperado) {
+      const pc: AnyCooperado = prefilledCooperado as any;
+      const displayName = pc.name ?? pc.nome ?? '';
+      const displayDoc = pc.document ?? pc.documento ?? '';
+      setCoopId(pc.id ?? '');
+      setCoopSearch(`${displayName || 'Sem nome'}${displayDoc ? ` / ${displayDoc}` : ''}`);
+      setShowCoopOptions(false);
+    }
+  }, [prefilledCooperado]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (!coopBoxRef.current) return;
+      if (!coopBoxRef.current.contains(e.target as Node)) setShowCoopOptions(false);
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, []);
+
+  // Close dropdown on ESC
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowCoopOptions(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!coopId || !summary || selectedProducts.length === 0) return alert("Preencha todos os campos");
-    
-    const cooperado = cooperados.find(c => c.id === coopId) || { name: 'Outro', document: '' };
-    
-    setSubmitting(true);
+  e.preventDefault();
+  if (!coopId || !summary || selectedProducts.length === 0) {
+    return alert("Preencha todos os campos");
+  }
+
+  // Normalize cooperado fields (Firestore uses nome/documento/nome_gerente)
+  const raw: AnyCooperado = (cooperados as AnyCooperado[]).find(c => c.id === coopId);
+
+  const cooperado: Cooperado = raw
+    ? ({
+        ...raw,
+        name: raw.name ?? raw.nome ?? 'Sem nome',
+        document: raw.document ?? raw.documento ?? '',
+        managerName: raw.managerName ?? raw.nome_gerente ?? '',
+      } as Cooperado)
+    : ({ id: coopId, name: 'Outro', document: '' } as Cooperado);
+
+  setSubmitting(true);
+  try {
     await addVisit({
-      cooperado: cooperado as Cooperado,
+      cooperado,
       date: new Date(),
       location: location,
       summary,
-      products: selectedProducts.map(p => ({ product: p }))
+      products: selectedProducts.map(p => ({ product: p })),
     });
+
+    // opcional: fechar o modal ao salvar
+    onClose();
+  } catch (err: any) {
+    console.error(err);
+    alert(err?.message || "Erro ao salvar a visita. Verifique permissões/rede.");
+  } finally {
     setSubmitting(false);
-  };
+  }
+};
+
 
   const toggleProduct = (p: Product) => {
     setSelectedProducts(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
@@ -49,22 +149,59 @@ const VisitForm: React.FC<VisitFormProps> = ({ cooperados, addVisit, onClose, pr
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          <div>
+          <div className="relative" ref={coopBoxRef}>
             <label className="block text-sm font-bold text-gray-700 mb-2">Cooperado</label>
-            <select 
-              className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#005058]"
-              value={coopId}
-              onChange={e => setCoopId(e.target.value)}
+
+            <input
+              value={coopSearch}
+              onChange={(e) => {
+                setCoopSearch(e.target.value);
+                setShowCoopOptions(true);
+                if (!prefilledCooperado) setCoopId('');
+              }}
+              onFocus={() => setShowCoopOptions(true)}
+              placeholder="Digite nome ou CPF/CNPJ..."
               disabled={!!prefilledCooperado}
-            >
-              <option value="">Selecione um cooperado...</option>
-              {cooperados.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+              className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#005058]"
+            />
+
+            {!prefilledCooperado && showCoopOptions && (
+              <div className="absolute z-50 mt-2 w-full bg-white border rounded-lg shadow-lg max-h-64 overflow-auto">
+                {filteredOptions.length === 0 ? (
+                  <div className="p-3 text-sm text-gray-500">Nenhum cooperado encontrado.</div>
+                ) : (
+                  filteredOptions.map((c: AnyCooperado) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="w-full text-left px-4 py-3 hover:bg-gray-50"
+                      onMouseDown={(e) => e.preventDefault()} // avoid blur before click
+                      onClick={() => {
+                        setCoopId(c.id);
+                        setCoopSearch(`${c.displayName || 'Sem nome'}${c.displayDoc ? ` / ${c.displayDoc}` : ''}`);
+                        setShowCoopOptions(false);
+                      }}
+                    >
+                      <span className="text-sm text-gray-800">
+                        <b>{c.displayName || 'Sem nome'}</b>
+                        {c.displayDoc ? ` / ${c.displayDoc}` : ''}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+
+            {!prefilledCooperado && (
+              <p className="mt-2 text-xs text-gray-500">
+                {coopId ? 'Cooperado selecionado.' : 'Digite para buscar e selecione na lista.'}
+              </p>
+            )}
           </div>
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">Resumo da Visita</label>
-            <textarea 
+            <textarea
               rows={3}
               className="w-full p-3 border rounded-lg outline-none focus:ring-2 focus:ring-[#005058]"
               placeholder="O que foi discutido?"
@@ -96,7 +233,7 @@ const VisitForm: React.FC<VisitFormProps> = ({ cooperados, addVisit, onClose, pr
             </span>
           </div>
 
-          <button 
+          <button
             type="submit"
             disabled={submitting}
             className="w-full bg-[#16a34a] text-white py-4 rounded-xl font-bold shadow-lg hover:bg-green-700 disabled:opacity-50 transition-colors"

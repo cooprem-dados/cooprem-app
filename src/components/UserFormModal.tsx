@@ -3,29 +3,33 @@ import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 
 interface UserFormModalProps {
-  user: User | null; 
+  user: User | null;
   onSave: (userData: User) => void;
   onClose: () => void;
 }
 
 const UserFormModal: React.FC<UserFormModalProps> = ({ user, onSave, onClose }) => {
   // Fix: Role must match the enum in root types.ts ('Gerente' | 'Desenvolvedor')
-  const [formData, setFormData] = useState<Omit<User, 'id'>>({ 
-    name: '', 
-    email: '', 
-    password: '', 
-    role: 'Gerente', 
-    agency: '' 
+  const [formData, setFormData] = useState<Omit<User, 'id'>>({
+    name: '',
+    email: '',
+    password: '',
+    role: 'Gerente',
+    agency: ''
   });
+
+  const paOptions = Array.from({ length: 6 }, (_, i) =>
+    i.toString().padStart(2, '0')
+  );
 
   useEffect(() => {
     if (user) {
-      setFormData({ 
-        name: user.name, 
-        email: user.email, 
-        password: user.password, 
-        role: user.role, 
-        agency: user.agency 
+      setFormData({
+        name: user.name,
+        email: user.email,
+        password: user.password,
+        role: user.role,
+        agency: user.agency
       });
     }
   }, [user]);
@@ -62,7 +66,23 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, onSave, onClose }) 
                 <option value="Desenvolvedor">Desenvolvedor</option>
               </select>
             </div>
-            <div><label style={labelStyle}>Agência (PA)</label><input type="text" name="agency" value={formData.agency} onChange={handleChange} required style={inputStyle} /></div>
+            <div>
+              <label style={labelStyle}>Agência (PA)</label>
+              <select
+                name="agency"
+                value={formData.agency}
+                onChange={handleChange}
+                required
+                style={inputStyle}
+              >
+                <option value="">Selecione o PA</option>
+                {paOptions.map((pa) => (
+                  <option key={pa} value={pa}>
+                    {pa}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
             <button type="button" onClick={onClose} style={{ backgroundColor: '#6b7280', color: 'white', fontWeight: 'bold', padding: '0.5rem 1rem', borderRadius: '0.25rem', border: 'none', cursor: 'pointer' }}>Cancelar</button>

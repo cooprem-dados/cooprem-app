@@ -41,6 +41,7 @@ export interface ProductDetail {
 
 export interface Visit {
   id: string;
+  serial?: string;
   cooperado: Cooperado | { name: string; document: string };
   date: Date;
   location: Geolocation | null;

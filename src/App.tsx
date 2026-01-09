@@ -30,6 +30,8 @@ import {
   setDoc,
   updateDoc,
   where,
+  runTransaction,
+  serverTimestamp,
 } from "firebase/firestore";
 
 function toDate(value: any): Date {
@@ -49,6 +51,41 @@ const App: React.FC = () => {
   const [cooperados, setCooperados] = useState<Cooperado[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
   const [suggestedVisits, setSuggestedVisits] = useState<SuggestedVisit[]>([]);
+
+  // Mapeia campos do Firestore (PT-BR) <-> modelo do app (EN)
+  const mapCooperadoFromFirestore = (id: string, data: any): Cooperado => ({
+    id,
+    name: data?.nome ?? data?.name ?? "",
+    document: data?.documento ?? data?.document ?? "",
+    isPortfolio: data?.isPortfolio ?? true,
+    managerName: data?.nome_gerente ?? data?.managerName ?? "",
+    agency: data?.PA ?? data?.agency ?? "",
+  });
+
+  const mapCooperadoToFirestore = (c: Omit<Cooperado, "id">) => ({
+    nome: c.name ?? "",
+    documento: c.document ?? "",
+    isPortfolio: c.isPortfolio ?? true,
+    nome_gerente: c.managerName ?? "",
+    PA: c.agency ?? "",
+    // opcional: campos normalizados (se você quiser manter padronização)
+    nome_normalizado: (c.name ?? "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]/g, ""),
+    nome_gerente_normalizado: (c.managerName ?? "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]/g, ""),
+    tipo_documento:
+      (c.document ?? "").replace(/\D/g, "").length === 11
+        ? "cpf"
+        : (c.document ?? "").replace(/\D/g, "").length === 14
+        ? "cnpj"
+        : "desconhecido",
+  });
 
   // Mantém o prop do DeveloperDashboard, mas sem IA por enquanto
   const hasAIKey = false;
@@ -149,21 +186,9 @@ const App: React.FC = () => {
       return false;
     }
   };
-
-  const handleAddVisit = async (v: Omit<Visit, "id" | "manager">) => {
-    if (!currentUser) return;
-
-    const visitData = {
-      ...v,
-      date: Timestamp.fromDate(toDate((v as any).date)),
-      manager: {
-        id: currentUser.id,
-        name: currentUser.name,
-        agency: currentUser.agency,
-      },
-    };
-
-    const ref = await addDoc(collection(db, "visits"), visitData);
+  //codigo antigo
+  /*const handleAddVisit = async (v: Omit<Visit, "id" | "manager">) => { if (!currentUser) return; const visitData = { ...v, date: Timestamp.fromDate(toDate((v as any).date)), manager: { id: currentUser.id, name: currentUser.name, agency: currentUser.agency, }, };
+   const ref = await addDoc(collection(db, "visits"), visitData);
 
     setVisits((prev) => [
       {
@@ -175,7 +200,60 @@ const App: React.FC = () => {
     ]);
 
     // Se sua UI estiver usando suggestedVisits como “pendências”, você pode remover manualmente depois
+  };*/
+  //codigo novo
+  const handleAddVisit = async (v: Omit<Visit, "id" | "manager">) => {
+  if (!currentUser) return;
+
+  const visitData = {
+    ...v,
+    date: Timestamp.fromDate(toDate((v as any).date)),
+    manager: {
+      id: currentUser.id,
+      name: currentUser.name,
+      agency: currentUser.agency,
+    },
   };
+
+  const counterRef = doc(db, "counters", "visits");
+  const visitsCol = collection(db, "visits");
+
+  let newVisit: Visit | null = null;
+
+  await runTransaction(db, async (tx) => {
+    // 1️⃣ lê contador
+    const counterSnap = await tx.get(counterRef);
+    const last = counterSnap.exists() ? counterSnap.data().value || 0 : 0;
+    const next = last + 1;
+
+    const serial = `V${String(next).padStart(3, "0")}`; // V001, V002...
+
+    // 2️⃣ atualiza contador
+    tx.set(counterRef, { value: next }, { merge: true });
+
+    // 3️⃣ cria visita
+    const visitRef = doc(visitsCol);
+    tx.set(visitRef, {
+      ...visitData,
+      serial,
+      createdAt: serverTimestamp(),
+    });
+
+    // 4️⃣ prepara objeto para UI
+    newVisit = {
+      ...(visitData as any),
+      id: visitRef.id,
+      serial,
+      date: toDate((v as any).date),
+    } as Visit;
+  });
+
+  // 5️⃣ atualiza UI
+  if (newVisit) {
+    setVisits((prev) => [newVisit as Visit, ...prev]);
+  }
+};
+
 
   const handleGenerateAISuggestions = async () => {
     alert("IA desativada por enquanto.");
@@ -239,8 +317,9 @@ const App: React.FC = () => {
             setUsers((p) => p.filter((u) => u.id !== id));
           }}
           onAddCooperado={async (c) => {
-            const r = await addDoc(collection(db, "cooperados"), c);
-            setCooperados((p) => [...p, { ...c, id: r.id }]);
+            const payload = mapCooperadoToFirestore(c);
+            const r = await addDoc(collection(db, "cooperados"), payload);
+            setCooperados((p) => [...p, mapCooperadoFromFirestore(r.id, payload)]);
           }}
           onGenerateAISuggestions={handleGenerateAISuggestions}
           onOpenChangePassword={setPasswordModalUser}
@@ -264,10 +343,9 @@ const App: React.FC = () => {
             setUsers((p) => p.map((u) => (u.id === id ? { ...u, ...d } : u)));
           }}
           onUpdateCooperado={async (id, c) => {
-            await updateDoc(doc(db, "cooperados", id), c);
-            setCooperados((p) =>
-              p.map((x) => (x.id === id ? { ...x, ...c } : x))
-            );
+            const payload = mapCooperadoToFirestore(c);
+            await updateDoc(doc(db, "cooperados", id), payload);
+            setCooperados((p) => p.map((x) => (x.id === id ? mapCooperadoFromFirestore(id, payload) : x)));
           }}
           onDeleteCooperado={async (id) => {
             if (!confirm("Excluir cooperado?")) return;
