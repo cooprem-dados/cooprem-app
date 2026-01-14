@@ -1,13 +1,22 @@
 
 export enum Product {
-  Consorcio = 'Consórcio',
+  RDC = 'RDC',
+  LCA = 'LCA',
+  Conta_capital = 'Conta Capital',
+  Cheque_especial = 'Cheque Especial',
+  Poupanca = 'Poupança',
   Seguro = 'Seguro',
-  Investimentos = 'Investimentos',
-  Credito = 'Crédito',
+  Cartao = 'Cartão de Crédito',
+  Pacote = 'Pacote de Tarifas',
+  Consorcio = 'Consórcio',
+  Credito = 'Empréstimo',
+  Financiamento = 'Financiamento',
   Previdencia = 'Previdência',
   Compliance = 'Compliance',
   Cobranca = 'Cobrança',
   SIPAG = 'SIPAG',
+  Outros = 'Outros',
+
 }
 
 export interface User {
@@ -52,9 +61,15 @@ export interface Visit {
 
 export interface SuggestedVisit {
   id: string;
-  cooperado: Cooperado;
+
+  // agora aceita cooperado da base ou manual
+  cooperado: Cooperado | { name: string; document: string };
+
+  // flag pedida: está na base?
+  cooperadoInBase?: boolean;
+
   manager: { id: string; name: string; agency: string };
   suggestedAt: Date;
-  suggestedBy: string; 
-  reason: string;
+  suggestedBy: string;
+  reason: string; // motivo da sugestão
 }

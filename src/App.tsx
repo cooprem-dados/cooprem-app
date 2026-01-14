@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Cooperado, SuggestedVisit, User, Visit } from "./types";
-
+import { limit, orderBy } from "firebase/firestore";
 import React from "react";
 import LoginScreen from "./components/LoginScreen";
 import Dashboard from "./components/Dashboard";
@@ -17,6 +17,7 @@ import {
   signOut,
   getAuth,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
 } from "firebase/auth";
 import {
   Timestamp,
@@ -52,6 +53,66 @@ const App: React.FC = () => {
   const [visits, setVisits] = useState<Visit[]>([]);
   const [suggestedVisits, setSuggestedVisits] = useState<SuggestedVisit[]>([]);
 
+  //Função de callback para search de cooperados
+  const normalizePA = (pa: string) => (pa ?? "").trim().replace(/^0+(?=\d)/, "");
+
+
+
+
+  //função buscar os cooperados com filtro
+  const searchCooperados = useCallback(
+    async (pa: string, term: string): Promise<Cooperado[]> => {
+      const t = term
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim();
+
+      if (!t || t.length < 2) return [];
+
+      const end = t + "\uf8ff";
+      const paKey = normalizePA(pa);
+
+      // 🔥 DEV/ADMIN: se pa for "*" (ou vazio), pesquisa na base toda
+      const isGlobal = paKey === "*" || paKey === "";
+      const minLen = isGlobal ? 3 : 2;
+if (!t || t.length < minLen) return [];
+
+      const q = isGlobal
+        ? query(
+          collection(db, "cooperados"),
+          orderBy("nome_normalizado"),
+          where("nome_normalizado", ">=", t),
+          where("nome_normalizado", "<=", end),
+          limit(20)
+        )
+        : query(
+          collection(db, "cooperados"),
+          where("PA", "==", paKey),
+          orderBy("nome_normalizado"),
+          where("nome_normalizado", ">=", t),
+          where("nome_normalizado", "<=", end),
+          limit(20)
+        );
+
+      const snap = await getDocs(q);
+
+      return snap.docs.map((d) => {
+        const data = d.data() as any;
+
+        return {
+          id: d.id,
+          ...data,
+
+          // ✅ padroniza para o front (evita "Sem nome")
+          name: data.name ?? data.nome ?? "",
+          document: data.document ?? data.documento ?? "",
+        } as Cooperado;
+      });
+    },
+    []
+  );
+
   // Mapeia campos do Firestore (PT-BR) <-> modelo do app (EN)
   const mapCooperadoFromFirestore = (id: string, data: any): Cooperado => ({
     id,
@@ -83,8 +144,8 @@ const App: React.FC = () => {
       (c.document ?? "").replace(/\D/g, "").length === 11
         ? "cpf"
         : (c.document ?? "").replace(/\D/g, "").length === 14
-        ? "cnpj"
-        : "desconhecido",
+          ? "cnpj"
+          : "desconhecido",
   });
 
   // Mantém o prop do DeveloperDashboard, mas sem IA por enquanto
@@ -94,60 +155,98 @@ const App: React.FC = () => {
     setLoading(true);
     try {
       const isDev = user.role === "Desenvolvedor" || user.role === "Admin";
-
-      const usersSnap = await getDocs(collection(db, "users"));
-      const cooperadosSnap = await getDocs(collection(db, "cooperados"));
-
+      /*
+            const visitsQ = isDev
+              ? query(collection(db, "visits"), limit(50))
+              : query(collection(db, "visits"), where("manager.id", "==", user.id), limit(50));
+      */
       const visitsQ = isDev
-        ? query(collection(db, "visits"))
-        : query(collection(db, "visits"), where("manager.id", "==", user.id));
+        ? query(
+          collection(db, "visits"),
+          orderBy("date", "desc"),
+          limit(50)
+        )
+        : query(
+          collection(db, "visits"),
+          where("manager.id", "==", user.id),
+          orderBy("date", "desc"),
+          limit(50)
+        );
 
       const suggQ = isDev
-        ? query(collection(db, "suggestedVisits"))
+        ? query(
+          collection(db, "suggestedVisits"),
+          orderBy("suggestedAt", "desc"),
+          limit(50)
+        )
         : query(
-            collection(db, "suggestedVisits"),
-            where("manager.id", "==", user.id)
-          );
+          collection(db, "suggestedVisits"),
+          where("manager.id", "==", user.id),
+          orderBy("suggestedAt", "desc"),
+          limit(50)
+        );
 
-      const [visitsSnap, suggSnap] = await Promise.all([
+      // Carrega cooperados do PA do usuário (para manter a busca funcionando sem ler a coleção inteira).
+      // OBS: Se o seu PA tiver muitos cooperados, o ideal é trocar a busca do Dashboard por consulta sob demanda (limit 20).
+      const userPA = (user as any).agency ?? (user as any).PA ?? "";
+      const cooperadosQ = userPA
+        ? query(
+          collection(db, "cooperados"),
+          where("PA", "==", userPA),
+          orderBy("nome_normalizado"),
+          limit(1000)
+        )
+        : query(collection(db, "cooperados"), limit(100)); // fallback seguro
+      /*
+            const [visitsSnap, suggSnap, cooperadosSnap] = await Promise.all([
+              getDocs(visitsQ),
+              getDocs(suggQ),
+              getDocs(cooperadosQ),
+            ]);
+      */
+      const [visRes, sugRes, coopRes] = await Promise.allSettled([
         getDocs(visitsQ),
         getDocs(suggQ),
+        getDocs(cooperadosQ),
       ]);
 
-      setUsers(
-        usersSnap.docs.map((d) => ({ ...(d.data() as any), id: d.id } as User))
-      );
-
-      setCooperados(
-        cooperadosSnap.docs.map(
-          (d) => ({ ...(d.data() as any), id: d.id } as Cooperado
-        ))
-      );
-
-      setVisits(
-        visitsSnap.docs
-          .map((d) => {
-            const data = d.data() as any;
-            return {
-              ...data,
-              id: d.id,
-              date: toDate(data.date),
-            } as Visit;
-          })
-          .sort((a, b) => b.date.getTime() - a.date.getTime())
-      );
-
-      setSuggestedVisits(
-        suggSnap.docs.map((d) => {
+      if (visRes.status === "fulfilled") {
+        const snap = visRes.value;
+        setVisits(snap.docs.map((d) => {
           const data = d.data() as any;
-          return {
-            ...data,
-            id: d.id,
-            suggestedAt: toDate(data.suggestedAt),
-          } as SuggestedVisit;
-        })
-      );
-    } finally {
+          return { ...data, id: d.id, date: toDate(data.date) } as Visit;
+        }));
+      } else {
+        console.error("Erro visitsQ:", visRes.reason);
+        setVisits([]);
+      }
+
+      if (sugRes.status === "fulfilled") {
+        const snap = sugRes.value;
+        setSuggestedVisits(snap.docs.map((d) => {
+          const data = d.data() as any;
+          return { ...data, id: d.id, suggestedAt: toDate(data.suggestedAt) } as SuggestedVisit;
+        }));
+      } else {
+        console.error("Erro suggQ:", sugRes.reason);
+        setSuggestedVisits([]);
+      }
+
+      if (coopRes.status === "fulfilled") {
+        const snap = coopRes.value;
+        setCooperados(snap.docs.map((d) => mapCooperadoFromFirestore(d.id, d.data())));
+      } else {
+        console.error("Erro cooperadosQ:", coopRes.reason);
+        setCooperados([]);
+      }
+    }
+    //erro codigo exposicao
+    catch (err) {
+      console.error("fetchData erro:", err);
+      alert("Erro ao carregar dados. Abra o console (F12) para ver detalhes.");
+    }
+
+    finally {
       setLoading(false);
     }
   }, []);
@@ -203,56 +302,56 @@ const App: React.FC = () => {
   };*/
   //codigo novo
   const handleAddVisit = async (v: Omit<Visit, "id" | "manager">) => {
-  if (!currentUser) return;
+    if (!currentUser) return;
 
-  const visitData = {
-    ...v,
-    date: Timestamp.fromDate(toDate((v as any).date)),
-    manager: {
-      id: currentUser.id,
-      name: currentUser.name,
-      agency: currentUser.agency,
-    },
-  };
+    const visitData = {
+      ...v,
+      date: Timestamp.fromDate(toDate((v as any).date)),
+      manager: {
+        id: currentUser.id,
+        name: currentUser.name,
+        agency: currentUser.agency,
+      },
+    };
 
-  const counterRef = doc(db, "counters", "visits");
-  const visitsCol = collection(db, "visits");
+    const counterRef = doc(db, "counters", "visits");
+    const visitsCol = collection(db, "visits");
 
-  let newVisit: Visit | null = null;
+    let newVisit: Visit | null = null;
 
-  await runTransaction(db, async (tx) => {
-    // 1️⃣ lê contador
-    const counterSnap = await tx.get(counterRef);
-    const last = counterSnap.exists() ? counterSnap.data().value || 0 : 0;
-    const next = last + 1;
+    await runTransaction(db, async (tx) => {
+      // 1️⃣ lê contador
+      const counterSnap = await tx.get(counterRef);
+      const last = counterSnap.exists() ? counterSnap.data().value || 0 : 0;
+      const next = last + 1;
 
-    const serial = `V${String(next).padStart(3, "0")}`; // V001, V002...
+      const serial = `V${String(next).padStart(3, "0")}`; // V001, V002...
 
-    // 2️⃣ atualiza contador
-    tx.set(counterRef, { value: next }, { merge: true });
+      // 2️⃣ atualiza contador
+      tx.set(counterRef, { value: next }, { merge: true });
 
-    // 3️⃣ cria visita
-    const visitRef = doc(visitsCol);
-    tx.set(visitRef, {
-      ...visitData,
-      serial,
-      createdAt: serverTimestamp(),
+      // 3️⃣ cria visita
+      const visitRef = doc(visitsCol);
+      tx.set(visitRef, {
+        ...visitData,
+        serial,
+        createdAt: serverTimestamp(),
+      });
+
+      // 4️⃣ prepara objeto para UI
+      newVisit = {
+        ...(visitData as any),
+        id: visitRef.id,
+        serial,
+        date: toDate((v as any).date),
+      } as Visit;
     });
 
-    // 4️⃣ prepara objeto para UI
-    newVisit = {
-      ...(visitData as any),
-      id: visitRef.id,
-      serial,
-      date: toDate((v as any).date),
-    } as Visit;
-  });
-
-  // 5️⃣ atualiza UI
-  if (newVisit) {
-    setVisits((prev) => [newVisit as Visit, ...prev]);
-  }
-};
+    // 5️⃣ atualiza UI
+    if (newVisit) {
+      setVisits((prev) => [newVisit as Visit, ...prev]);
+    }
+  };
 
 
   const handleGenerateAISuggestions = async () => {
@@ -289,27 +388,36 @@ const App: React.FC = () => {
           cooperados={cooperados}
           visits={visits}
           suggestedVisits={suggestedVisits}
+          searchCooperados={searchCooperados}
           onLogout={() => signOut(auth)}
           hasAIKey={hasAIKey}
           onAddUser={async (u) => {
-            // cria usuário no Auth sem derrubar sessão atual
             const secApp = initializeApp(firebaseConfig, `Sec_${Date.now()}`);
             const secAuth = getAuth(secApp);
 
-            const cred = await createUserWithEmailAndPassword(
-              secAuth,
-              u.email,
-              u.password || "123456"
-            );
+            try {
+              const cred = await createUserWithEmailAndPassword(
+                secAuth,
+                u.email,
+                u.password || "123456"
+              );
 
-            await setDoc(doc(db, "users", cred.user.uid), {
-              ...u,
-              password: u.password || "123456",
-            });
+              await setDoc(doc(db, "users", cred.user.uid), {
+                ...u,
+                createdAt: serverTimestamp(),
+              });
 
-            setUsers((p) => [...p, { ...u, id: cred.user.uid }]);
-
-            await deleteApp(secApp);
+              setUsers((p) => [...p, { ...u, password: undefined, id: cred.user.uid }]);
+            } catch (err: any) {
+              if (err?.code === "auth/email-already-in-use") {
+                alert("Já existe um usuário cadastrado com este e-mail.");
+                return;
+              }
+              alert("Erro ao criar usuário.");
+              console.error(err);
+            } finally {
+              await deleteApp(secApp);
+            }
           }}
           onDeleteUser={async (id) => {
             if (!confirm("Remover este usuário?")) return;
@@ -357,6 +465,7 @@ const App: React.FC = () => {
         <Dashboard
           user={currentUser}
           visits={visits}
+          searchCooperados={searchCooperados}
           cooperados={cooperados}
           suggestedVisits={suggestedVisits}
           onLogout={() => signOut(auth)}
@@ -365,27 +474,29 @@ const App: React.FC = () => {
       )}
 
       {passwordModalUser && (
-  <PasswordFormModal
-    user={passwordModalUser}
-    onSave={async (userId: string, newPass: string) => {
-      // atualiza só a senha (como o modal promete)
-      await updateDoc(doc(db, "users", userId), { password: newPass });
-
-      // atualiza também no state (para refletir na UI)
-      setUsers((p) =>
-        p.map((x) => (x.id === userId ? { ...x, password: newPass } : x))
-      );
-
-      // se o usuário aberto no modal é o mesmo, atualiza ele também
-      setPasswordModalUser((prev) =>
-        prev && prev.id === userId ? { ...prev, password: newPass } : prev
-      );
-
-      setPasswordModalUser(null);
-    }}
-    onClose={() => setPasswordModalUser(null)}
-  />
-  )}
+        <PasswordFormModal
+          user={passwordModalUser}
+          onSave={async (_userId: string, _newPass: string) => {
+            // Não armazene senha no Firestore (segurança/LGPD). Em vez disso, envie e-mail de redefinição.
+            const targetEmail = passwordModalUser?.email;
+            if (!targetEmail) {
+              alert("E-mail do usuário não encontrado para redefinir a senha.");
+              return;
+            }
+            try {
+              await sendPasswordResetEmail(auth, targetEmail);
+              alert("E-mail de redefinição de senha enviado.");
+            } catch (err) {
+              console.error(err);
+              alert("Não foi possível enviar o e-mail de redefinição de senha.");
+              return;
+            } finally {
+              setPasswordModalUser(null);
+            }
+          }}
+          onClose={() => setPasswordModalUser(null)}
+        />
+      )}
     </div>
   );
 };
