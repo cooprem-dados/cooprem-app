@@ -147,6 +147,12 @@ const App: React.FC = () => {
           ? "cnpj"
           : "desconhecido",
   });
+  // remover as sugestões
+  const handleRemoveSuggestion = async (id: string) => {
+  await deleteDoc(doc(db, "suggestedVisits", id));
+  setSuggestedVisits((p) => p.filter((x) => x.id !== id));
+};
+
 
   // Mantém o prop do DeveloperDashboard, mas sem IA por enquanto
   const hasAIKey = false;
@@ -444,6 +450,7 @@ const App: React.FC = () => {
           suggestedVisits={suggestedVisits}
           onLogout={() => signOut(auth)}
           addVisit={handleAddVisit}
+          onRemoveSuggestion={handleRemoveSuggestion}
         />
       )}
 

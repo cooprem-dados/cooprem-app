@@ -21,6 +21,9 @@ interface VisitFormProps {
 
   addVisit: (v: Omit<Visit, 'id' | 'manager'>) => Promise<void>;
   onClose: () => void;
+
+  suggestionId?: string | null;
+  onRemoveSuggestion?: (id: string) => Promise<void>;
   prefilledCooperado: Cooperado | null;
 }
 
@@ -32,6 +35,8 @@ const VisitForm: React.FC<VisitFormProps> = ({
   currentPA,
   addVisit,
   onClose,
+  suggestionId,
+  onRemoveSuggestion,
   prefilledCooperado,
 }) => {
   const [coopId, setCoopId] = useState(prefilledCooperado?.id || '');
@@ -153,6 +158,7 @@ const VisitForm: React.FC<VisitFormProps> = ({
   }, [coopSearch, cooperadosNormalized, searchCooperados, cooperadosResults]);
 
   // If prefilled cooperado, lock input and show value as "nome / documento"
+  /*
   useEffect(() => {
     if (prefilledCooperado) {
       setIsProspeccao(false);
@@ -164,6 +170,39 @@ const VisitForm: React.FC<VisitFormProps> = ({
       setCoopSearch(`${displayName || 'Sem nome'}${displayDoc ? ` / ${displayDoc}` : ''}`);
       setShowCoopOptions(false);
     }
+  }, [prefilledCooperado]);*/
+
+  useEffect(() => {
+    if (!prefilledCooperado) return;
+
+    const raw: any = prefilledCooperado;
+
+    // normaliza campos vindos da sugestão
+    const name = (raw.name ?? raw.nome ?? 'Sem nome').trim();
+    const doc = (raw.document ?? raw.documento ?? '').trim();
+
+    // Detecta sugestão manual/prospecção:
+    // - id "prospeccao"/"manual" OU
+    // - não tem id confiável
+    const isManual = raw.id === 'prospeccao' || raw.id === 'manual' || !raw.id;
+
+    if (isManual) {
+      // ✅ ativa modo manual e preenche campos
+      setIsProspeccao(true);
+      setManualCoop({ name, document: doc });
+      setCoopId('prospeccao');
+      setCoopSearch(`${name}${doc ? ` / ${doc}` : ''}`);
+      setShowCoopOptions(false);
+      return;
+    }
+
+    // ✅ Cooperado normal (com id)
+    setIsProspeccao(false);
+    setManualCoop({ name: '', document: '' }); // opcional: limpa manual
+    setCoopId(raw.id);
+
+    setCoopSearch(`${name}${doc ? ` / ${doc}` : ''}`);
+    setShowCoopOptions(false);
   }, [prefilledCooperado]);
 
   // Close dropdown on outside click
@@ -197,31 +236,40 @@ const VisitForm: React.FC<VisitFormProps> = ({
 
     // Se for prospecção, cooperado é manual (sem puxar da base)
     const cooperado = isProspeccao
-  ? ({
-      id: "prospeccao",
-      name: manualCoop.name.trim(),
-      document: manualCoop.document.trim(),
-      managerName: "",
-    } as Cooperado)
-  : (() => {
-      // Se searchCooperados existe, estamos em modo remoto:
-      // use SOMENTE cooperadosResults (fonte das opções).
-      // Se não existe, usamos SOMENTE a lista local (fallback).
-      const list: AnyCooperado[] = searchCooperados
-        ? (cooperadosResults as AnyCooperado[])
-        : (cooperados as AnyCooperado[]);
+      ? ({
+        id: "prospeccao",
+        name: manualCoop.name.trim(),
+        document: manualCoop.document.trim(),
+        managerName: "",
+      } as Cooperado)
+      : (() => {
+        // ✅ Se veio prefilled (Atender sugestão), usa direto
+        if (prefilledCooperado?.id) {
+          const raw: any = prefilledCooperado;
+          return {
+            id: raw.id,
+            name: raw.name ?? raw.nome ?? "Sem nome",
+            document: raw.document ?? raw.documento ?? "",
+            managerName: raw.managerName ?? raw.nome_gerente ?? "",
+          } as Cooperado;
+        }
 
-      const raw: AnyCooperado | undefined = list.find((c) => c.id === coopId);
+        // Caso normal: resolve pelo coopId a partir da lista (remota ou local)
+        const list: AnyCooperado[] = searchCooperados
+          ? (cooperadosResults as AnyCooperado[])
+          : (cooperados as AnyCooperado[]);
 
-      return raw
-        ? ({
+        const raw = list.find((c) => c.id === coopId);
+
+        return raw
+          ? ({
             ...raw,
             name: raw.name ?? raw.nome ?? "Sem nome",
             document: raw.document ?? raw.documento ?? "",
             managerName: raw.managerName ?? raw.nome_gerente ?? "",
           } as Cooperado)
-        : ({ id: coopId, name: "Outro", document: "" } as Cooperado);
-    })();
+          : ({ id: coopId, name: "Outro", document: "" } as Cooperado);
+      })();
 
     setSubmitting(true);
     try {
@@ -232,6 +280,9 @@ const VisitForm: React.FC<VisitFormProps> = ({
         summary,
         products: selectedProducts.map(p => ({ product: p })),
       });
+      if (suggestionId && onRemoveSuggestion) {
+        await onRemoveSuggestion(suggestionId);
+      }
 
       onClose();
     } catch (err: any) {

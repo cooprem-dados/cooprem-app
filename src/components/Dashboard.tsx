@@ -12,14 +12,16 @@ interface DashboardProps {
   suggestedVisits: SuggestedVisit[];
   onLogout: () => void;
   addVisit: (v: Omit<Visit, 'id' | 'manager'>) => Promise<void>;
+  onRemoveSuggestion: (id: string) => Promise<void>;
 
   // NOVO:
   searchCooperados: (pa: string, term: string) => Promise<Cooperado[]>;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ user, visits, cooperados, suggestedVisits, searchCooperados, onLogout, addVisit }) => {
+const Dashboard: React.FC<DashboardProps> = ({ user, visits, cooperados, suggestedVisits, searchCooperados, onLogout, addVisit, onRemoveSuggestion }) => {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [selectedCoop, setSelectedCoop] = useState<Cooperado | null>(null);
+  const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null);
   const roleKey = (user.role || "").toLowerCase().trim();
   const isDev = roleKey === "desenvolvedor" || roleKey === "admin";
 
@@ -69,17 +71,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, visits, cooperados, suggest
                   </div>
                   <button
                     onClick={() => {
-                      const coop: any = s.cooperado;
-
-                      // Se for cooperado da base, tem id
-                      if (coop && typeof coop === 'object' && 'id' in coop) {
-                        setSelectedCoop(coop as Cooperado);
-                      } else {
-                        setSelectedCoop(null); // manual -> abre sem cooperado da base
-                        // opcional: se você tiver um estado pra prospecção, pode ligar aqui
-                        // setOpenProspeccao(true);
-                      }
-
+                      setSelectedSuggestionId(s.id);
+                      setSelectedCoop(s.cooperado as any);
                       setIsFormOpen(true);
                     }}
                     className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded font-bold"
@@ -106,15 +99,24 @@ const Dashboard: React.FC<DashboardProps> = ({ user, visits, cooperados, suggest
       </main>
 
       {isFormOpen && (
-        <VisitForm
-          cooperados={cooperados}          // pode manter ou colocar []
-          currentPA={isDev ? "*" : user.agency}         // ✅ aqui
-          searchCooperados={searchCooperados}
-          onClose={() => setIsFormOpen(false)}
-          addVisit={async (v) => { await addVisit(v); setIsFormOpen(false); }}
-          prefilledCooperado={selectedCoop}
-        />
-      )}
+  <VisitForm
+    cooperados={cooperados}                 // ou []
+    currentPA={isDev ? "*" : user.agency}
+    searchCooperados={searchCooperados}
+    prefilledCooperado={selectedCoop}
+    suggestionId={selectedSuggestionId}
+    onRemoveSuggestion={onRemoveSuggestion}
+    addVisit={async (v) => {
+      await addVisit(v);
+      // deixa o VisitForm chamar onClose() quando terminar
+    }}
+    onClose={() => {
+      setSelectedCoop(null);
+      setSelectedSuggestionId(null);
+      setIsFormOpen(false);
+    }}
+  />
+)}
     </div>
   );
 };
