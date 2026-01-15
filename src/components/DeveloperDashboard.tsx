@@ -41,10 +41,29 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   const [coopSugResults, setCoopSugResults] = useState<Cooperado[]>([]);
   const [loadingCoopSug, setLoadingCoopSug] = useState(false);
 
-  //modelos de search para procurar tudo
-  searchCooperados: (pa: string, term: string) => Promise<Cooperado[]>;
+  // modelos de search para procurar tudo
   const [coopResults, setCoopResults] = useState<Cooperado[]>([]);
   const [loadingCoops, setLoadingCoops] = useState(false);
+
+  // ===== Paginação de usuários (aba Users) =====
+  const USERS_PER_PAGE = 10;
+  const [usersPage, setUsersPage] = useState(1);
+
+  useEffect(() => {
+    // sempre que entrar na aba ou a lista mudar, volta para a primeira página
+    if (tab === 'users') setUsersPage(1);
+  }, [tab, props.users]);
+
+  const usersTotalPages = useMemo(() => {
+    const total = (props.users || []).length;
+    return Math.max(1, Math.ceil(total / USERS_PER_PAGE));
+  }, [props.users]);
+
+  const visibleUsers = useMemo(() => {
+    const start = (usersPage - 1) * USERS_PER_PAGE;
+    return (props.users || []).slice(start, start + USERS_PER_PAGE);
+  }, [props.users, usersPage]);
+
 
 
   // ===== Sugestões: Autocomplete Gerente =====
@@ -706,7 +725,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                   <tr><th className="py-4">Nome</th><th className="py-4">Email</th><th className="py-4">Agência</th><th className="py-4 text-right">Ações</th></tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
-                  {props.users.map(u => (
+                  {visibleUsers.map(u => (
                     <tr key={u.id} className="hover:bg-gray-800/50 transition-colors">
                       <td className="py-4 font-bold">{u.name}</td>
                       <td className="py-4 text-gray-400 text-sm">{u.email}</td>
@@ -719,6 +738,28 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                   ))}
                 </tbody>
               </table>
+            </div>
+
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <div className="text-xs text-gray-400">
+                Página <b>{usersPage}</b> de <b>{usersTotalPages}</b> · Total: <b>{props.users.length}</b>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setUsersPage(p => Math.max(1, p - 1))}
+                  disabled={usersPage <= 1}
+                  className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-xs px-4 py-2 rounded-lg font-bold"
+                >
+                  ◀ Anterior
+                </button>
+                <button
+                  onClick={() => setUsersPage(p => Math.min(usersTotalPages, p + 1))}
+                  disabled={usersPage >= usersTotalPages}
+                  className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-xs px-4 py-2 rounded-lg font-bold"
+                >
+                  Próxima ▶
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -76,7 +76,7 @@ const App: React.FC = () => {
       // 🔥 DEV/ADMIN: se pa for "*" (ou vazio), pesquisa na base toda
       const isGlobal = paKey === "*" || paKey === "";
       const minLen = isGlobal ? 3 : 2;
-if (!t || t.length < minLen) return [];
+      if (!t || t.length < minLen) return [];
 
       const q = isGlobal
         ? query(
@@ -186,6 +186,10 @@ if (!t || t.length < minLen) return [];
           limit(50)
         );
 
+      const usersQ = isDev
+        ? query(collection(db, "users"), orderBy("name"), limit(1000))
+        : null;
+
       // Carrega cooperados do PA do usuário (para manter a busca funcionando sem ler a coleção inteira).
       // OBS: Se o seu PA tiver muitos cooperados, o ideal é trocar a busca do Dashboard por consulta sob demanda (limit 20).
       const userPA = (user as any).agency ?? (user as any).PA ?? "";
@@ -197,17 +201,12 @@ if (!t || t.length < minLen) return [];
           limit(1000)
         )
         : query(collection(db, "cooperados"), limit(100)); // fallback seguro
-      /*
-            const [visitsSnap, suggSnap, cooperadosSnap] = await Promise.all([
-              getDocs(visitsQ),
-              getDocs(suggQ),
-              getDocs(cooperadosQ),
-            ]);
-      */
-      const [visRes, sugRes, coopRes] = await Promise.allSettled([
+
+      const [visRes, sugRes, coopRes, usersRes] = await Promise.allSettled([
         getDocs(visitsQ),
         getDocs(suggQ),
         getDocs(cooperadosQ),
+        isDev && usersQ ? getDocs(usersQ) : Promise.resolve(null),
       ]);
 
       if (visRes.status === "fulfilled") {
@@ -230,6 +229,15 @@ if (!t || t.length < minLen) return [];
       } else {
         console.error("Erro suggQ:", sugRes.reason);
         setSuggestedVisits([]);
+      }
+
+      if (isDev && usersRes.status === "fulfilled" && usersRes.value) {
+        const snap = usersRes.value;
+        setUsers(
+          snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }) as User)
+        );
+      } else {
+        setUsers([]); // fora do dev, não mostra usuários
       }
 
       if (coopRes.status === "fulfilled") {
