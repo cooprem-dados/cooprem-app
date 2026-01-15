@@ -52,7 +52,6 @@ const VisitForm: React.FC<VisitFormProps> = ({
   const [loadingCooperados, setLoadingCooperados] = useState(false);
   const lastReqIdRef = useRef(0);
 
-
   useEffect(() => { getLocation(); }, [getLocation]);
 
   // Helpers for search
@@ -86,7 +85,8 @@ const VisitForm: React.FC<VisitFormProps> = ({
     if (!searchCooperados) return;
     const pa = currentPA || '';
     const raw = term.trim();
-    if (!pa || raw.length < 2) {
+    const minChars = pa === '*' ? 3 : 2;
+    if (!pa || raw.length < minChars) {
       setCooperadosResults([]);
       return;
     }
@@ -107,9 +107,10 @@ const VisitForm: React.FC<VisitFormProps> = ({
   // Debounce remote search while typing
   useEffect(() => {
     if (!searchCooperados || prefilledCooperado) return;
-
+    const pa = currentPA || '';
+    const minChars = pa === '*' ? 3 : 2;
     const raw = coopSearch.trim();
-    if (!raw || raw.length < 2) {
+    if (!raw || raw.length < minChars) {
       setCooperadosResults([]);
       return;
     }
@@ -119,7 +120,7 @@ const VisitForm: React.FC<VisitFormProps> = ({
     }, 350);
 
     return () => clearTimeout(t);
-  }, [coopSearch, runRemoteSearch, searchCooperados, prefilledCooperado]);
+  }, [coopSearch, runRemoteSearch, searchCooperados, prefilledCooperado, currentPA]);
 
   // Options shown in dropdown:
   // - If remote search is enabled: show remote results only (already limited to 20)
@@ -196,27 +197,31 @@ const VisitForm: React.FC<VisitFormProps> = ({
 
     // Se for prospecção, cooperado é manual (sem puxar da base)
     const cooperado = isProspeccao
-      ? ({
-        id: "prospeccao",
-        name: manualCoop.name.trim(),
-        document: manualCoop.document.trim(),
-        managerName: "",
-      } as Cooperado)
-      : (() => {
-        const all: AnyCooperado[] = [
-          ...(cooperadosResults as AnyCooperado[]),
-          ...(cooperados as AnyCooperado[]),
-        ];
-        const raw: AnyCooperado = all.find(c => c.id === coopId);
-        return raw
-          ? ({
+  ? ({
+      id: "prospeccao",
+      name: manualCoop.name.trim(),
+      document: manualCoop.document.trim(),
+      managerName: "",
+    } as Cooperado)
+  : (() => {
+      // Se searchCooperados existe, estamos em modo remoto:
+      // use SOMENTE cooperadosResults (fonte das opções).
+      // Se não existe, usamos SOMENTE a lista local (fallback).
+      const list: AnyCooperado[] = searchCooperados
+        ? (cooperadosResults as AnyCooperado[])
+        : (cooperados as AnyCooperado[]);
+
+      const raw: AnyCooperado | undefined = list.find((c) => c.id === coopId);
+
+      return raw
+        ? ({
             ...raw,
-            name: raw.name ?? raw.nome ?? 'Sem nome',
-            document: raw.document ?? raw.documento ?? '',
-            managerName: raw.managerName ?? raw.nome_gerente ?? '',
+            name: raw.name ?? raw.nome ?? "Sem nome",
+            document: raw.document ?? raw.documento ?? "",
+            managerName: raw.managerName ?? raw.nome_gerente ?? "",
           } as Cooperado)
-          : ({ id: coopId, name: 'Outro', document: '' } as Cooperado);
-      })();
+        : ({ id: coopId, name: "Outro", document: "" } as Cooperado);
+    })();
 
     setSubmitting(true);
     try {
@@ -240,7 +245,8 @@ const VisitForm: React.FC<VisitFormProps> = ({
   const toggleProduct = (p: Product) => {
     setSelectedProducts(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
   };
-
+  const pa = (currentPA ?? '').trim();
+  const minChars = pa === '*' ? 3 : 2;
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto shadow-2xl">
@@ -330,7 +336,7 @@ const VisitForm: React.FC<VisitFormProps> = ({
                     <div className="p-3 text-sm text-gray-500">Buscando cooperados...</div>
                   ) : filteredOptions.length === 0 ? (
                     <div className="p-3 text-sm text-gray-500">
-                      {searchCooperados && coopSearch.trim().length >= 2 && !currentPA
+                      {searchCooperados && coopSearch.trim().length >= minChars && !pa
                         ? 'PA não informado para busca.'
                         : 'Nenhum cooperado encontrado.'}
                     </div>

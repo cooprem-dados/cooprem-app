@@ -155,17 +155,9 @@ const App: React.FC = () => {
     setLoading(true);
     try {
       const isDev = user.role === "Desenvolvedor" || user.role === "Admin";
-      /*
-            const visitsQ = isDev
-              ? query(collection(db, "visits"), limit(50))
-              : query(collection(db, "visits"), where("manager.id", "==", user.id), limit(50));
-      */
+
       const visitsQ = isDev
-        ? query(
-          collection(db, "visits"),
-          orderBy("date", "desc"),
-          limit(50)
-        )
+        ? query(collection(db, "visits"), orderBy("date", "desc"), limit(50))
         : query(
           collection(db, "visits"),
           where("manager.id", "==", user.id),
@@ -174,11 +166,7 @@ const App: React.FC = () => {
         );
 
       const suggQ = isDev
-        ? query(
-          collection(db, "suggestedVisits"),
-          orderBy("suggestedAt", "desc"),
-          limit(50)
-        )
+        ? query(collection(db, "suggestedVisits"), orderBy("suggestedAt", "desc"), limit(50))
         : query(
           collection(db, "suggestedVisits"),
           where("manager.id", "==", user.id),
@@ -187,34 +175,24 @@ const App: React.FC = () => {
         );
 
       const usersQ = isDev
-        ? query(collection(db, "users"), orderBy("name"), limit(1000))
+        ? query(collection(db, "users"), orderBy("name"), limit(50))
         : null;
-
-      // Carrega cooperados do PA do usuário (para manter a busca funcionando sem ler a coleção inteira).
-      // OBS: Se o seu PA tiver muitos cooperados, o ideal é trocar a busca do Dashboard por consulta sob demanda (limit 20).
-      const userPA = (user as any).agency ?? (user as any).PA ?? "";
-      const cooperadosQ = userPA
-        ? query(
-          collection(db, "cooperados"),
-          where("PA", "==", userPA),
-          orderBy("nome_normalizado"),
-          limit(1000)
-        )
-        : query(collection(db, "cooperados"), limit(100)); // fallback seguro
 
       const [visRes, sugRes, coopRes, usersRes] = await Promise.allSettled([
         getDocs(visitsQ),
         getDocs(suggQ),
-        getDocs(cooperadosQ),
+        Promise.resolve(null), // <-- NÃO buscar cooperados no boot
         isDev && usersQ ? getDocs(usersQ) : Promise.resolve(null),
       ]);
 
       if (visRes.status === "fulfilled") {
         const snap = visRes.value;
-        setVisits(snap.docs.map((d) => {
-          const data = d.data() as any;
-          return { ...data, id: d.id, date: toDate(data.date) } as Visit;
-        }));
+        setVisits(
+          snap.docs.map((d) => {
+            const data = d.data() as any;
+            return { ...data, id: d.id, date: toDate(data.date) } as Visit;
+          })
+        );
       } else {
         console.error("Erro visitsQ:", visRes.reason);
         setVisits([]);
@@ -222,10 +200,12 @@ const App: React.FC = () => {
 
       if (sugRes.status === "fulfilled") {
         const snap = sugRes.value;
-        setSuggestedVisits(snap.docs.map((d) => {
-          const data = d.data() as any;
-          return { ...data, id: d.id, suggestedAt: toDate(data.suggestedAt) } as SuggestedVisit;
-        }));
+        setSuggestedVisits(
+          snap.docs.map((d) => {
+            const data = d.data() as any;
+            return { ...data, id: d.id, suggestedAt: toDate(data.suggestedAt) } as SuggestedVisit;
+          })
+        );
       } else {
         console.error("Erro suggQ:", sugRes.reason);
         setSuggestedVisits([]);
@@ -233,28 +213,14 @@ const App: React.FC = () => {
 
       if (isDev && usersRes.status === "fulfilled" && usersRes.value) {
         const snap = usersRes.value;
-        setUsers(
-          snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }) as User)
-        );
+        setUsers(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }) as User));
       } else {
-        setUsers([]); // fora do dev, não mostra usuários
+        setUsers([]);
       }
 
-      if (coopRes.status === "fulfilled") {
-        const snap = coopRes.value;
-        setCooperados(snap.docs.map((d) => mapCooperadoFromFirestore(d.id, d.data())));
-      } else {
-        console.error("Erro cooperadosQ:", coopRes.reason);
-        setCooperados([]);
-      }
-    }
-    //erro codigo exposicao
-    catch (err) {
-      console.error("fetchData erro:", err);
-      alert("Erro ao carregar dados. Abra o console (F12) para ver detalhes.");
-    }
-
-    finally {
+      // cooperados agora só via busca remota (searchCooperados)
+      setCooperados([]);
+    } finally {
       setLoading(false);
     }
   }, []);
