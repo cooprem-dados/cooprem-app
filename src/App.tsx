@@ -149,8 +149,20 @@ const App: React.FC = () => {
   });
   // remover as sugestões
   const handleRemoveSuggestion = async (id: string) => {
-  await deleteDoc(doc(db, "suggestedVisits", id));
-  setSuggestedVisits((p) => p.filter((x) => x.id !== id));
+    await deleteDoc(doc(db, "suggestedVisits", id));
+    setSuggestedVisits((p) => p.filter((x) => x.id !== id));
+  };
+
+  const onResetUserPassword = async (email: string) => {
+  if (!confirm(`Enviar e-mail de redefinição de senha para ${email}?`)) return;
+
+  try {
+    await sendPasswordResetEmail(auth, email);
+    alert("E-mail de redefinição enviado.");
+  } catch (err: any) {
+    console.error(err);
+    alert("Não foi possível enviar o e-mail de redefinição.");
+  }
 };
 
 
@@ -368,6 +380,7 @@ const App: React.FC = () => {
           cooperados={cooperados}
           visits={visits}
           suggestedVisits={suggestedVisits}
+          onResetUserPassword={onResetUserPassword}
           searchCooperados={searchCooperados}
           onLogout={() => signOut(auth)}
           hasAIKey={hasAIKey}
@@ -383,7 +396,13 @@ const App: React.FC = () => {
               );
 
               await setDoc(doc(db, "users", cred.user.uid), {
-                ...u,
+                name: u.name,
+                email: u.email,
+                role: u.role,
+                agency: u.agency,
+                disabled: false,
+                disabledAt: null,
+                disabledBy: null,
                 createdAt: serverTimestamp(),
               });
 
@@ -400,9 +419,30 @@ const App: React.FC = () => {
             }
           }}
           onDeleteUser={async (id) => {
-            if (!confirm("Remover este usuário?")) return;
-            await deleteDoc(doc(db, "users", id));
-            setUsers((p) => p.filter((u) => u.id !== id));
+            if (!confirm("Desativar este usuário? Ele não conseguirá acessar o sistema.")) return;
+
+            await updateDoc(doc(db, "users", id), {
+              disabled: true,
+              disabledAt: serverTimestamp(),
+              disabledBy: auth.currentUser?.uid || null,
+            });
+
+            setUsers((p) =>
+              p.map((u) => (u.id === id ? { ...u, disabled: true } : u))
+            );
+          }}
+          onEnableUser={async (id) => {
+            if (!confirm("Reativar este usuário?")) return;
+
+            await updateDoc(doc(db, "users", id), {
+              disabled: false,
+              disabledAt: null,
+              disabledBy: null,
+            });
+
+            setUsers((p) =>
+              p.map((u) => (u.id === id ? { ...u, disabled: false } : u))
+            );
           }}
           onAddCooperado={async (c) => {
             const payload = mapCooperadoToFirestore(c);

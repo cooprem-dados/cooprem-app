@@ -26,6 +26,9 @@ export interface User {
   password?: string;
   role: string;
   agency: string;
+  disabled?: boolean;      // <-- novo
+  disabledAt?: any;        // opcional (Timestamp)
+  disabledBy?: string;     // opcional
 }
 
 export interface Cooperado {

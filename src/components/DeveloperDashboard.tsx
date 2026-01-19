@@ -15,16 +15,23 @@ interface DeveloperDashboardProps {
   suggestedVisits: SuggestedVisit[];
   hasAIKey: boolean;
   onLogout: () => void;
+
   onAddUser: (u: User) => Promise<void>;
-  onDeleteUser: (id: string) => Promise<void>;
-  onAddCooperado: (c: any) => Promise<void>;
-  onGenerateAISuggestions: () => Promise<void>;
-  onOpenChangePassword: (u: User) => void;
-  onAddSuggestion: (s: any) => Promise<void>;
-  onRemoveSuggestion: (id: string) => Promise<void>;
   onUpdateUser: (id: string, d: any) => Promise<void>;
+  onDeleteUser: (id: string) => Promise<void>;
+  onEnableUser: (id: string) => Promise<void>; // <-- aqui
+  onResetUserPassword: (email: string) => Promise<void>;
+
+  onAddCooperado: (c: any) => Promise<void>;
   onUpdateCooperado: (id: string, c: any) => Promise<void>;
   onDeleteCooperado: (id: string) => Promise<void>;
+
+  onGenerateAISuggestions: () => Promise<void>;
+  onOpenChangePassword: (u: User) => void;
+
+  onAddSuggestion: (s: any) => Promise<void>;
+  onRemoveSuggestion: (id: string) => Promise<void>;
+
   searchCooperados: (pa: string, term: string) => Promise<Cooperado[]>;
 }
 
@@ -725,14 +732,51 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                   <tr><th className="py-4">Nome</th><th className="py-4">Email</th><th className="py-4">Agência</th><th className="py-4 text-right">Ações</th></tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
-                  {visibleUsers.map(u => (
+                  {visibleUsers.map((u) => (
                     <tr key={u.id} className="hover:bg-gray-800/50 transition-colors">
-                      <td className="py-4 font-bold">{u.name}</td>
+                      <td className="py-4 font-bold">
+                        {u.name}
+                        {u.disabled === true ? (
+                          <span className="ml-2 text-xs text-yellow-400 font-bold">(DESATIVADO)</span>
+                        ) : null}
+                      </td>
+
                       <td className="py-4 text-gray-400 text-sm">{u.email}</td>
                       <td className="py-4 text-sm">{u.agency}</td>
+
                       <td className="py-4 text-right space-x-4">
-                        <button onClick={() => { setModalUser(u); setIsUserModal(true); }} className="text-blue-400 hover:text-blue-300 font-bold text-xs">EDITAR</button>
-                        <button onClick={() => props.onDeleteUser(u.id)} className="text-red-500 hover:text-red-400 font-bold text-xs">EXCLUIR</button>
+                        <button
+                          onClick={() => {
+                            setModalUser(u);
+                            setIsUserModal(true);
+                          }}
+                          className="text-blue-400 hover:text-blue-300 font-bold text-xs"
+                        >
+                          EDITAR
+                        </button>
+
+                        <button
+                          onClick={() => props.onResetUserPassword(u.email)}
+                          className="text-yellow-400 hover:text-yellow-300 font-bold text-xs"
+                        >
+                          RESET SENHA
+                        </button>
+
+                        {u.disabled === true ? (
+                          <button
+                            onClick={() => props.onEnableUser(u.id)}
+                            className="text-green-400 hover:text-green-300 font-bold text-xs"
+                          >
+                            REATIVAR
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => props.onDeleteUser(u.id)}
+                            className="text-red-500 hover:text-red-400 font-bold text-xs"
+                          >
+                            DESATIVAR
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}

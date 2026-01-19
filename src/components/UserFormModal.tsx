@@ -18,9 +18,7 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, onSave, onClose }) 
     agency: ''
   });
 
-  const paOptions = Array.from({ length: 6 }, (_, i) =>
-    i.toString().padStart(2, '0')
-  );
+  const paOptions = Array.from({ length: 6 }, (_, i) => String(i));
 
   useEffect(() => {
     if (user) {
