@@ -57,8 +57,11 @@ const App: React.FC = () => {
   const normalizePA = (pa: string) => (pa ?? "").trim().replace(/^0+(?=\d)/, "");
 
 
-
-
+  //chave 'unica' helper
+  function normalizeDoc(doc: string) {
+    return (doc ?? "").replace(/\D/g, "").trim(); // só dígitos, mantém zeros
+  }
+  
   //função buscar os cooperados com filtro
   const searchCooperados = useCallback(
     async (pa: string, term: string): Promise<Cooperado[]> => {
@@ -154,16 +157,16 @@ const App: React.FC = () => {
   };
 
   const onResetUserPassword = async (email: string) => {
-  if (!confirm(`Enviar e-mail de redefinição de senha para ${email}?`)) return;
+    if (!confirm(`Enviar e-mail de redefinição de senha para ${email}?`)) return;
 
-  try {
-    await sendPasswordResetEmail(auth, email);
-    alert("E-mail de redefinição enviado.");
-  } catch (err: any) {
-    console.error(err);
-    alert("Não foi possível enviar o e-mail de redefinição.");
-  }
-};
+    try {
+      await sendPasswordResetEmail(auth, email);
+      alert("E-mail de redefinição enviado.");
+    } catch (err: any) {
+      console.error(err);
+      alert("Não foi possível enviar o e-mail de redefinição.");
+    }
+  };
 
 
   // Mantém o prop do DeveloperDashboard, mas sem IA por enquanto

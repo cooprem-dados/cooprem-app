@@ -1,23 +1,21 @@
-import React, { useEffect, useRef } from 'react';
-import { Visit } from '../types';
-import L from 'leaflet';
+import React, { useEffect, useRef } from "react";
+import { Visit } from "../types";
+import L from "leaflet";
 
 function toDate(value: any): Date {
   if (value instanceof Date) return value;
-  // Firestore Timestamp shape: { seconds, nanoseconds }
-  if (value && typeof value === 'object' && typeof value.seconds === 'number') {
+  if (value && typeof value === "object" && typeof value.seconds === "number") {
     return new Date(value.seconds * 1000);
   }
   return new Date(value);
 }
 
 function formatDatePtBR(d: Date): string {
-  return d.toLocaleDateString('pt-BR');
+  return d.toLocaleDateString("pt-BR");
 }
 
 function daysAgo(d: Date): number {
   const now = new Date();
-  // Normaliza para "meia-noite" para não variar por horas
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const startOfThatDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const diffMs = startOfToday - startOfThatDay;
@@ -26,18 +24,16 @@ function daysAgo(d: Date): number {
 
 function relativeDaysFromNow(d: Date): string {
   const diffDays = daysAgo(d);
-  if (diffDays <= 0) return 'hoje';
-  if (diffDays === 1) return 'há 1 dia';
+  if (diffDays <= 0) return "hoje";
+  if (diffDays === 1) return "há 1 dia";
   return `há ${diffDays} dias`;
 }
 
-// Ícones por faixa de "dias atrás"
 function markerIconForDays(diffDays: number): L.DivIcon {
-  // < 70 = verde | 71-90 = amarelo | > 90 = vermelho
-  const color = diffDays <= 70 ? '#16a34a' : (diffDays <= 90 ? '#f59e0b' : '#dc2626');
+  const color = diffDays <= 70 ? "#16a34a" : diffDays <= 90 ? "#f59e0b" : "#dc2626";
 
   return L.divIcon({
-    className: '',
+    className: "",
     html: `
       <div style="
         width:16px;
@@ -53,7 +49,9 @@ function markerIconForDays(diffDays: number): L.DivIcon {
   });
 }
 
-interface VisitsMapProps { visits: Visit[]; }
+interface VisitsMapProps {
+  visits: Visit[];
+}
 
 const VisitsMap: React.FC<VisitsMapProps> = ({ visits }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -63,8 +61,8 @@ const VisitsMap: React.FC<VisitsMapProps> = ({ visits }) => {
     if (!containerRef.current || mapRef.current) return;
 
     mapRef.current = L.map(containerRef.current).setView([-18.9186, -48.2772], 6);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap'
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap",
     }).addTo(mapRef.current);
 
     return () => {
@@ -76,21 +74,25 @@ const VisitsMap: React.FC<VisitsMapProps> = ({ visits }) => {
   useEffect(() => {
     if (!mapRef.current) return;
 
-    // Limpar marcadores
-    mapRef.current.eachLayer(layer => {
+    // limpar markers
+    mapRef.current.eachLayer((layer) => {
       if (layer instanceof L.Marker) mapRef.current?.removeLayer(layer);
     });
 
     const bounds: L.LatLngExpression[] = [];
 
-    visits.forEach(v => {
-      if (!v.location) return;
+    visits.forEach((v: any) => {
+      const loc = v?.location;
+      const lat = loc?.latitude;
+      const lng = loc?.longitude;
+      if (lat == null || lng == null) return;
 
-      const dt = toDate((v as any).date);
+      const dt = toDate(v?.date);
       const diffDays = daysAgo(dt);
 
-      const cooperadoName = (v.cooperado as any)?.name ?? '—';
-      const gerenteName = (v.manager as any)?.name ?? '—';
+      const cooperadoName = (v?.cooperado?.name ?? "—").toString();
+      const gerenteName = (v?.manager?.name ?? v?.cooperado?.managerName ?? "—").toString();
+
       const dtStr = formatDatePtBR(dt);
       const rel = relativeDaysFromNow(dt);
 
@@ -99,19 +101,18 @@ const VisitsMap: React.FC<VisitsMapProps> = ({ visits }) => {
           <div style="font-weight: 700; margin-bottom: 6px;">${cooperadoName}</div>
           <div style="margin-bottom: 6px;">
             <div><b>Gerente:</b> ${gerenteName}</div>
-            <div><b>Data:</b> ${dtStr} <span style="opacity:.75">(${rel})</span></div>
+            <div><b>Última visita:</b> ${dtStr} <span style="opacity:.75">(${rel})</span></div>
+            <div><b>Dias:</b> ${diffDays}</div>
           </div>
-          <div style="opacity:.9; white-space: pre-wrap;">${(v.summary ?? '').toString()}</div>
+          <div style="opacity:.9; white-space: pre-wrap;">${(v?.summary ?? "").toString()}</div>
         </div>
       `;
 
-      const marker = L.marker([v.location.latitude, v.location.longitude], {
-        icon: markerIconForDays(diffDays),
-      })
+      L.marker([lat, lng], { icon: markerIconForDays(diffDays) })
         .bindPopup(popupHtml)
         .addTo(mapRef.current!);
 
-      bounds.push([v.location.latitude, v.location.longitude]);
+      bounds.push([lat, lng]);
     });
 
     if (bounds.length > 0) {

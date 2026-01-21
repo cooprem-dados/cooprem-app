@@ -47,6 +47,9 @@ const VisitForm: React.FC<VisitFormProps> = ({
   const [isProspeccao, setIsProspeccao] = useState(false);
   const [manualCoop, setManualCoop] = useState({ name: "", document: "" });
 
+  //erro usuarios conserta
+  const [selectedCooperado, setSelectedCooperado] = useState<Cooperado | null>(prefilledCooperado ?? null);
+
   // Autocomplete states
   const [coopSearch, setCoopSearch] = useState('');
   const [showCoopOptions, setShowCoopOptions] = useState(false);
@@ -227,59 +230,59 @@ const VisitForm: React.FC<VisitFormProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const hasBaseCoop = !isProspeccao && !!coopId;
+    const hasBaseCoop = !isProspeccao && (!!prefilledCooperado?.id || !!selectedCooperado?.id);
     const hasManualCoop = isProspeccao && manualCoop.name.trim().length > 0;
 
     if ((!hasBaseCoop && !hasManualCoop) || !summary || selectedProducts.length === 0) {
       return alert("Preencha todos os campos");
     }
 
-    // Se for prospecção, cooperado é manual (sem puxar da base)
-    const cooperado = isProspeccao
-      ? ({
+    // Resolve cooperado (sem depender de cooperadosResults no submit)
+    let cooperado: Cooperado;
+
+    if (isProspeccao) {
+      cooperado = {
         id: "prospeccao",
         name: manualCoop.name.trim(),
         document: manualCoop.document.trim(),
+        isPortfolio: false,
         managerName: "",
-      } as Cooperado)
-      : (() => {
-        // ✅ Se veio prefilled (Atender sugestão), usa direto
-        if (prefilledCooperado?.id) {
-          const raw: any = prefilledCooperado;
-          return {
-            id: raw.id,
-            name: raw.name ?? raw.nome ?? "Sem nome",
-            document: raw.document ?? raw.documento ?? "",
-            managerName: raw.managerName ?? raw.nome_gerente ?? "",
-          } as Cooperado;
-        }
+      };
+    } else if (prefilledCooperado?.id) {
+      const raw: any = prefilledCooperado;
+      cooperado = {
+        id: raw.id,
+        name: raw.name ?? raw.nome ?? "Sem nome",
+        document: raw.document ?? raw.documento ?? "",
+        isPortfolio: Boolean(raw.isPortfolio ?? false),
+        managerName: raw.managerName ?? raw.nome_gerente,
+        agency: raw.agency,
+      };
+    } else {
+      if (!selectedCooperado?.id) {
+        alert("Selecione um cooperado da lista.");
+        return;
+      }
 
-        // Caso normal: resolve pelo coopId a partir da lista (remota ou local)
-        const list: AnyCooperado[] = searchCooperados
-          ? (cooperadosResults as AnyCooperado[])
-          : (cooperados as AnyCooperado[]);
+      // opcional: garante consistência com o coopId
+      if (coopId && selectedCooperado.id !== coopId) {
+        alert("O cooperado selecionado não confere. Selecione novamente.");
+        return;
+      }
 
-        const raw = list.find((c) => c.id === coopId);
-
-        return raw
-          ? ({
-            ...raw,
-            name: raw.name ?? raw.nome ?? "Sem nome",
-            document: raw.document ?? raw.documento ?? "",
-            managerName: raw.managerName ?? raw.nome_gerente ?? "",
-          } as Cooperado)
-          : ({ id: coopId, name: "Outro", document: "" } as Cooperado);
-      })();
+      cooperado = selectedCooperado;
+    }
 
     setSubmitting(true);
     try {
       await addVisit({
         cooperado,
         date: new Date(),
-        location: location,
+        location,
         summary,
-        products: selectedProducts.map(p => ({ product: p })),
+        products: selectedProducts.map((p) => ({ product: p })),
       });
+
       if (suggestionId && onRemoveSuggestion) {
         await onRemoveSuggestion(suggestionId);
       }
@@ -371,9 +374,14 @@ const VisitForm: React.FC<VisitFormProps> = ({
               <input
                 value={coopSearch}
                 onChange={(e) => {
-                  setCoopSearch(e.target.value);
+                  const v = e.target.value;
+                  setCoopSearch(v);
                   setShowCoopOptions(true);
-                  if (!prefilledCooperado) setCoopId('');
+
+                  if (!prefilledCooperado) {
+                    setCoopId('');
+                    setSelectedCooperado(null); // ✅ importante
+                  }
                 }}
                 onFocus={() => setShowCoopOptions(true)}
                 placeholder="Digite nome ou CPF/CNPJ..."
@@ -399,8 +407,20 @@ const VisitForm: React.FC<VisitFormProps> = ({
                         className="w-full text-left px-4 py-3 hover:bg-gray-50"
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => {
-                          setCoopId(c.id);
-                          setCoopSearch(`${c.displayName || 'Sem nome'}${c.displayDoc ? ` / ${c.displayDoc}` : ''}`);
+                          const picked: Cooperado = {
+                            id: c.id,
+                            name: c.displayName ?? c.name ?? c.nome ?? "Sem nome",
+                            document: c.displayDoc ?? c.document ?? c.documento ?? "",
+                            isPortfolio: Boolean(
+                              c.isPortfolio ?? c.portfolio ?? c.is_portfolio ?? c.inPortfolio ?? false
+                            ),
+                            managerName: c.managerName ?? c.nome_gerente,
+                            agency: c.agency ?? c.PA ?? c.pa,
+                          };
+
+                          setSelectedCooperado(picked);
+                          setCoopId(picked.id);
+                          setCoopSearch(`${picked.name}${picked.document ? ` / ${picked.document}` : ""}`);
                           setShowCoopOptions(false);
                         }}
                       >
