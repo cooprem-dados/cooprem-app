@@ -6,7 +6,17 @@ import VisitsMap from './VisitsMap';
 import UserFormModal from './UserFormModal';
 import CooperadoFormModal from './CooperadoFormModal';
 import { Product } from '../types';
+import {
+  collection,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  where,
+  Timestamp,
+} from "firebase/firestore";
 
+import { db } from "../firebase/firebaseConfig";
 
 interface DeveloperDashboardProps {
   users: User[];
@@ -52,21 +62,84 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   const [coopResults, setCoopResults] = useState<Cooperado[]>([]);
   const [loadingCoops, setLoadingCoops] = useState(false);
 
+
   // ===== Paginação de usuários (aba Users) =====
   const USERS_PER_PAGE = 10;
   const [usersPage, setUsersPage] = useState(1);
 
   //estados do filtro do mpa
-  type DaysBucket = "" | "<70" | "70-90" | ">90";
+  type DaysBucket = "" | "<70" | "70-90" | "90-180" | "180-360" | ">360";
+
 
   const [mapManagerId, setMapManagerId] = useState<string>(""); // sem filtro
-  const [mapDays, setMapDays] = useState<DaysBucket>("");       // sem filtro
-  const [mapGerenteNorm, setMapGerenteNorm] = useState<string>("");  
+  const [mapManagerName, setMapManagerName] = useState("");
+  const [mapWalletManager, setMapWalletManager] = useState<string>("");
+  // PA: "" = todos, ou "0".."5"
+  const [mapPA, setMapPA] = useState<string>("");
+  const [mapDays, setMapDays] = useState<DaysBucket>("<70"); // default econômico
+const [mapVisits, setMapVisits] = useState<Visit[]>([]);
+const [mapLoading, setMapLoading] = useState(false);
+
+  // meses para trás (default = 1 = mês anterior)
+  const [mapMonthsBack, setMapMonthsBack] = useState<number>(1);
 
   useEffect(() => {
     // sempre que entrar na aba ou a lista mudar, volta para a primeira página
     if (tab === 'users') setUsersPage(1);
   }, [tab, props.users]);
+
+  useEffect(() => {
+  if (tab !== "map") return;
+
+  let cancelled = false;
+
+  (async () => {
+    setMapLoading(true);
+    try {
+      const { mode, start, end } = getBucketRange(mapDays);
+
+      // ajuste o limit conforme seu uso
+      const MAP_LIMIT = 1000;
+
+      let q;
+
+      if (mode === "range") {
+        q = query(
+          collection(db, "visits"),
+          where("date", ">=", Timestamp.fromDate(start!)),
+          where("date", "<", Timestamp.fromDate(end!)),
+          orderBy("date", "desc"),
+          limit(MAP_LIMIT)
+        );
+      } else {
+        // >360
+        q = query(
+          collection(db, "visits"),
+          where("date", "<", Timestamp.fromDate(end!)),
+          orderBy("date", "desc"),
+          limit(MAP_LIMIT)
+        );
+      }
+
+      const snap = await getDocs(q);
+      const rows = snap.docs.map((d) => {
+        const data = d.data() as any;
+        return { ...data, id: d.id, date: toDate(data.date) } as Visit;
+      });
+
+      if (!cancelled) setMapVisits(rows);
+    } catch (err) {
+      console.error("Erro fetch mapa:", err);
+      if (!cancelled) setMapVisits([]);
+    } finally {
+      if (!cancelled) setMapLoading(false);
+    }
+  })();
+
+  return () => {
+    cancelled = true;
+  };
+}, [tab, mapDays]);
 
   const usersTotalPages = useMemo(() => {
     const total = (props.users || []).length;
@@ -239,6 +312,22 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     return Math.floor((startOfToday - startOfThatDay) / (1000 * 60 * 60 * 24));
   }
 
+  function daysAgoDate(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+
+function getBucketRange(bucket: DaysBucket) {
+  const now = new Date();
+  if (bucket === "<70") return { mode: "range" as const, start: daysAgoDate(70), end: now };
+  if (bucket === "70-90") return { mode: "range" as const, start: daysAgoDate(90), end: daysAgoDate(70) };
+  if (bucket === "90-180") return { mode: "range" as const, start: daysAgoDate(180), end: daysAgoDate(90) };
+  if (bucket === "180-360") return { mode: "range" as const, start: daysAgoDate(360), end: daysAgoDate(180) };
+  return { mode: "older" as const, start: null, end: daysAgoDate(360) }; // >360
+}
   function inBucket(days: number, bucket: DaysBucket) {
     if (!bucket) return true;
     if (bucket === "<70") return days < 70;
@@ -253,6 +342,19 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     }
     return new Date(value);
   }
+
+  function startOfMonth(d: Date) {
+    return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+  }
+
+  function addMonths(d: Date, delta: number) {
+    return new Date(d.getFullYear(), d.getMonth() + delta, 1, 0, 0, 0, 0);
+  }
+
+  // Ex: monthsBack=1 => start = início do mês anterior
+  const now = new Date();
+  const rangeStart = startOfMonth(addMonths(now, -mapMonthsBack));
+  const rangeEnd = now;
 
   const paOptions = useMemo(() => {
     const fromUsers = props.users.map(u => (u.agency || '').trim()).filter(Boolean);
@@ -330,23 +432,71 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     }
 
     return Array.from(m.values());
-  }, [props.visits]);
+  }, [mapVisits]);
 
-  const filteredMapVisits = useMemo(() => {
-    return lastVisits.filter((v: any) => {
-      if (mapManagerId && (v?.manager?.id || "") !== mapManagerId) return false;
+const filteredMapVisits = useMemo(() => {
+  const now = new Date();
+  const rangeStart = startOfMonth(addMonths(now, -mapMonthsBack));
+  const startMs = rangeStart.getTime();
+  const endMs = now.getTime();
 
-      const dt = toDate(v?.date);
-      const days = daysAgo(dt);
-      if (!inBucket(days, mapDays)) return false;
+  const walletQ = normalizeTextStrict(mapWalletManager); // se você tiver carteira
 
-      return true;
-    });
-  }, [lastVisits, mapManagerId, mapDays]);
+  return lastVisits.filter((v: any) => {
+    // 1) usuário (registrador)
+    if (mapManagerId && (v?.manager?.id || "") !== mapManagerId) return false;
+
+    // 2) carteira (opcional)
+    if (walletQ) {
+      const walletName = v?.cooperado?.managerName ?? v?.cooperado?.nome_gerente ?? "";
+      if (normalizeTextStrict(String(walletName || "")) !== walletQ) return false;
+    }
+
+    // 3) PA (onde está o PA? escolha 1 fonte)
+    // Preferência: salvar em visit.PA ou visit.manager.agency ou visit.cooperado.PA
+    if (mapPA) {
+      const pa =
+        String(v?.PA ?? v?.manager?.agency ?? v?.cooperado?.PA ?? "");
+      if (pa !== mapPA) return false;
+    }
+
+    // 4) data (janela por meses)
+    const dt = toDate(v?.date); // seu helper
+    const t = dt?.getTime?.() ?? 0;
+    if (t < startMs || t > endMs) return false;
+
+    // 5) seu bucket antigo (mapDays) se ainda quiser
+    const days = daysAgo(dt);
+    if (!inBucket(days, mapDays)) return false;
+
+    return true;
+  });
+}, [
+  lastVisits,
+  mapManagerId,
+  mapWalletManager,
+  mapPA,
+  mapMonthsBack,
+  mapDays,
+]);
 
 
+  //opções de visita
 
+  const walletManagers = useMemo(() => {
+    const set = new Set<string>();
 
+    for (const v of lastVisits as any[]) {
+      const nm =
+        v?.cooperado?.managerName ??
+        v?.cooperado?.nome_gerente ??
+        "";
+      const s = String(nm || "").trim();
+      if (s) set.add(s);
+    }
+
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [lastVisits]);
 
   // Limite de visualização (apenas na tabela): mostrar as 50 visitas mais recentes do resultado filtrado
   const visibleVisits = useMemo(() => {
@@ -887,6 +1037,46 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                   ))}
               </select>
 
+              {/* ✅ novo: filtro por carteira (nome do gerente da carteira) */}
+              <select
+                value={mapWalletManager}
+                onChange={(e) => setMapWalletManager(e.target.value)}
+                className="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm"
+              >
+                <option value="">Todas as carteiras</option>
+                {walletManagers.map((nm) => (
+                  <option key={nm} value={nm}>
+                    {nm}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={mapPA}
+                onChange={(e) => setMapPA(e.target.value)}
+                className="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm"
+              >
+                <option value="">Todos os PAs</option>
+                <option value="0">PA 0</option>
+                <option value="1">PA 1</option>
+                <option value="2">PA 2</option>
+                <option value="3">PA 3</option>
+                <option value="4">PA 4</option>
+                <option value="5">PA 5</option>
+              </select>
+
+              <select
+                value={mapMonthsBack}
+                onChange={(e) => setMapMonthsBack(Number(e.target.value))}
+                className="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm"
+              >
+                <option value={1}>Mês anterior (padrão)</option>
+                <option value={2}>Últimos 2 meses</option>
+                <option value={3}>Últimos 3 meses</option>
+                <option value={6}>Últimos 6 meses</option>
+                <option value={12}>Últimos 12 meses</option>
+              </select>
+
               <select
                 value={mapDays}
                 onChange={(e) => setMapDays(e.target.value as any)}
@@ -901,7 +1091,10 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
               <button
                 onClick={() => {
                   setMapManagerId("");
+                  setMapWalletManager("");
                   setMapDays("");
+                  setMapPA("");
+                  setMapMonthsBack(1);
                 }}
                 className="ml-auto text-xs font-bold text-gray-300 hover:text-white"
               >
@@ -918,344 +1111,344 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
 
 
 
-      {tab === 'cooperados' && (
-        <div className="bg-[#1f2937] rounded-2xl border border-gray-700 p-8">
-          <div className="flex flex-col gap-4 mb-8">
-            <div>
-              <h2 className="text-2xl font-bold">Cooperados</h2>
-              <p className="text-sm text-gray-400 mt-1">
-                Pesquise por nome ou CPF/CNPJ
-              </p>
-            </div>
-
-            <input
-              value={coopSearch}
-              onChange={(e) => setCoopSearch(e.target.value)}
-              placeholder="Buscar por nome ou CPF/CNPJ"
-              className="w-full md:max-w-md bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-sm"
-            />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {visibleCooperados.map(coop => (
-              <div key={coop.id} className="p-5 bg-gray-800 rounded-xl border border-gray-700 hover:border-blue-500/50 transition-all cursor-pointer group" onClick={() => { setModalCoop(coop); setIsCoopModal(true); }}>
-                <p className="font-bold text-lg group-hover:text-blue-400 transition-colors">{coop.name}</p>
-                <p className="text-xs font-mono text-gray-500 mt-1 uppercase">{coop.document}</p>
-                <p className="text-xs text-gray-400 mt-4 border-t border-gray-700 pt-3">Gerente: <span className="text-gray-200">{coop.managerName || 'Não atribuído'}</span></p>
-              </div>
-            ))}
-          </div>
-
-          {!loadingCoops && coopSearch.trim().length >= 2 && coopResults.length === 20 && (
-            <div className="mt-3 text-xs text-gray-400">
-              Exibindo apenas os primeiros <b>20</b> resultados. Refine a busca para encontrar outros registros.
-            </div>
-          )}
-
-        </div>
-      )}
-
-      {tab === 'suggestions' && (
-        <div className="bg-[#1f2937] rounded-2xl border border-gray-700 p-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-            <div>
-              <h2 className="text-2xl font-bold text-white">Sugestões de Visita</h2>
-              <p className="text-sm text-gray-400 mt-1">
-                Crie uma sugestão para um gerente (gerente e cooperado via autocomplete). Cooperado pode estar na base ou ser manual.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* FORM */}
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-              <h3 className="font-bold text-white mb-4">Nova sugestão</h3>
-
-              {/* ===== Gerente (Autocomplete) ===== */}
-              <div className="relative" ref={mgrBoxRef}>
-                <label className="text-xs text-gray-400 font-bold">Gerente</label>
-
-                <input
-                  value={mgrSearch}
-                  onChange={(e) => {
-                    setMgrSearch(e.target.value);
-                    setMgrShow(true);
-                    setSelectedManager(null);
-                  }}
-                  onFocus={() => setMgrShow(true)}
-                  className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Digite nome ou PA..."
-                />
-
-                {mgrShow && (
-                  <div className="absolute z-50 mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-lg max-h-64 overflow-auto">
-                    {gerenteOptions.length === 0 ? (
-                      <div className="p-3 text-sm text-gray-400">Nenhum gerente encontrado.</div>
-                    ) : (
-                      gerenteOptions.map((g: any) => (
-                        <button
-                          key={g.id}
-                          type="button"
-                          className="w-full text-left px-4 py-3 hover:bg-gray-800"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => {
-                            setSelectedManager(g);
-                            setSugManagerId(g.id); // mantém seu state atual, se você estiver usando
-                            setMgrSearch(`${g.name} — PA ${g.agency}`);
-                            setMgrShow(false);
-                          }}
-                        >
-                          <span className="text-sm text-gray-100">
-                            <b>{g.name}</b> <span className="text-gray-400">— PA {g.agency}</span>
-                          </span>
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-
-                <p className="mt-2 text-xs text-gray-500">
-                  {selectedManager ? 'Gerente selecionado.' : 'Digite para buscar e selecione na lista.'}
+        {tab === 'cooperados' && (
+          <div className="bg-[#1f2937] rounded-2xl border border-gray-700 p-8">
+            <div className="flex flex-col gap-4 mb-8">
+              <div>
+                <h2 className="text-2xl font-bold">Cooperados</h2>
+                <p className="text-sm text-gray-400 mt-1">
+                  Pesquise por nome ou CPF/CNPJ
                 </p>
               </div>
 
-              {/* ===== Flag: Cooperado está na base ===== */}
-              <div className="mt-4 flex items-center gap-3">
-                <input
-                  id="inbase"
-                  type="checkbox"
-                  checked={sugInBase}
-                  onChange={(e) => {
-                    const v = e.target.checked;
-                    setSugInBase(v);
+              <input
+                value={coopSearch}
+                onChange={(e) => setCoopSearch(e.target.value)}
+                placeholder="Buscar por nome ou CPF/CNPJ"
+                className="w-full md:max-w-md bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {visibleCooperados.map(coop => (
+                <div key={coop.id} className="p-5 bg-gray-800 rounded-xl border border-gray-700 hover:border-blue-500/50 transition-all cursor-pointer group" onClick={() => { setModalCoop(coop); setIsCoopModal(true); }}>
+                  <p className="font-bold text-lg group-hover:text-blue-400 transition-colors">{coop.name}</p>
+                  <p className="text-xs font-mono text-gray-500 mt-1 uppercase">{coop.document}</p>
+                  <p className="text-xs text-gray-400 mt-4 border-t border-gray-700 pt-3">Gerente: <span className="text-gray-200">{coop.managerName || 'Não atribuído'}</span></p>
+                </div>
+              ))}
+            </div>
 
-                    // limpa campos ao alternar
-                    setSelectedCoop(null);
-                    setCoopSugSearch('');
-                    setCoopSugShow(false);
-                    setSugManual({ name: '', document: '' });
-                  }}
-                />
-                <label htmlFor="inbase" className="text-sm font-bold text-gray-200">
-                  Cooperado está na base
-                </label>
+            {!loadingCoops && coopSearch.trim().length >= 2 && coopResults.length === 20 && (
+              <div className="mt-3 text-xs text-gray-400">
+                Exibindo apenas os primeiros <b>20</b> resultados. Refine a busca para encontrar outros registros.
               </div>
+            )}
 
-              {/* ===== Cooperado (Autocomplete se base, manual se não) ===== */}
-              {sugInBase ? (
-                <div className="relative mt-4" ref={coopSugBoxRef}>
-                  <label className="text-xs text-gray-400 font-bold">Cooperado</label>
+          </div>
+        )}
+
+        {tab === 'suggestions' && (
+          <div className="bg-[#1f2937] rounded-2xl border border-gray-700 p-8">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-white">Sugestões de Visita</h2>
+                <p className="text-sm text-gray-400 mt-1">
+                  Crie uma sugestão para um gerente (gerente e cooperado via autocomplete). Cooperado pode estar na base ou ser manual.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* FORM */}
+              <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
+                <h3 className="font-bold text-white mb-4">Nova sugestão</h3>
+
+                {/* ===== Gerente (Autocomplete) ===== */}
+                <div className="relative" ref={mgrBoxRef}>
+                  <label className="text-xs text-gray-400 font-bold">Gerente</label>
 
                   <input
-                    value={coopSugSearch}
+                    value={mgrSearch}
                     onChange={(e) => {
-                      setCoopSugSearch(e.target.value);
-                      setCoopSugShow(true);
-                      setSelectedCoop(null);
+                      setMgrSearch(e.target.value);
+                      setMgrShow(true);
+                      setSelectedManager(null);
                     }}
-                    onFocus={() => setCoopSugShow(true)}
+                    onFocus={() => setMgrShow(true)}
                     className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Digite nome ou CPF/CNPJ..."
+                    placeholder="Digite nome ou PA..."
                   />
 
-                  {coopSugShow && (
+                  {mgrShow && (
                     <div className="absolute z-50 mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-lg max-h-64 overflow-auto">
-                      {loadingCoopSug ? (
-                        <div className="p-3 text-sm text-gray-400">Buscando cooperados...</div>
-                      ) : cooperadosOptions.length === 0 ? (
-                        <div className="p-3 text-sm text-gray-400">Nenhum cooperado encontrado.</div>
+                      {gerenteOptions.length === 0 ? (
+                        <div className="p-3 text-sm text-gray-400">Nenhum gerente encontrado.</div>
                       ) : (
-                        cooperadosOptions.map((c: any) => {
-                          const displayName = c.name ?? c.nome ?? "Sem nome";
-                          const displayDoc = c.document ?? c.documento ?? "";
-
-                          return (
-                            <button
-                              key={c.id}
-                              type="button"
-                              className="w-full text-left px-4 py-3 hover:bg-gray-800"
-                              onMouseDown={(e) => e.preventDefault()}
-                              onClick={() => {
-                                setSelectedCoop(c);
-                                setCoopSugSearch(`${displayName}${displayDoc ? ` / ${displayDoc}` : ""}`);
-                                setCoopSugShow(false);
-                              }}
-                            >
-                              <span className="text-sm text-gray-100">
-                                <b>{displayName}</b>
-                                <span className="text-gray-400">
-                                  {displayDoc ? ` / ${displayDoc}` : ""}
-                                </span>
-                              </span>
-                            </button>
-                          );
-                        })
+                        gerenteOptions.map((g: any) => (
+                          <button
+                            key={g.id}
+                            type="button"
+                            className="w-full text-left px-4 py-3 hover:bg-gray-800"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setSelectedManager(g);
+                              setSugManagerId(g.id); // mantém seu state atual, se você estiver usando
+                              setMgrSearch(`${g.name} — PA ${g.agency}`);
+                              setMgrShow(false);
+                            }}
+                          >
+                            <span className="text-sm text-gray-100">
+                              <b>{g.name}</b> <span className="text-gray-400">— PA {g.agency}</span>
+                            </span>
+                          </button>
+                        ))
                       )}
                     </div>
                   )}
 
                   <p className="mt-2 text-xs text-gray-500">
-                    {selectedCoop ? 'Cooperado selecionado.' : 'Digite para buscar e selecione na lista.'}
+                    {selectedManager ? 'Gerente selecionado.' : 'Digite para buscar e selecione na lista.'}
                   </p>
                 </div>
-              ) : (
-                <div className="mt-4 space-y-3">
-                  <div>
-                    <label className="text-xs text-gray-400 font-bold">Nome (manual)</label>
-                    <input
-                      value={sugManual.name}
-                      onChange={(e) => setSugManual(p => ({ ...p, name: e.target.value }))}
-                      className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Digite o nome..."
-                    />
-                  </div>
 
-                  <div>
-                    <label className="text-xs text-gray-400 font-bold">CPF/CNPJ (manual)</label>
-                    <input
-                      value={sugManual.document}
-                      onChange={(e) => setSugManual(p => ({ ...p, document: e.target.value }))}
-                      className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Digite o CPF/CNPJ..."
-                    />
-                  </div>
+                {/* ===== Flag: Cooperado está na base ===== */}
+                <div className="mt-4 flex items-center gap-3">
+                  <input
+                    id="inbase"
+                    type="checkbox"
+                    checked={sugInBase}
+                    onChange={(e) => {
+                      const v = e.target.checked;
+                      setSugInBase(v);
 
-                  <p className="text-xs text-gray-500">
-                    Este cooperado não será cadastrado na base, apenas na sugestão.
-                  </p>
+                      // limpa campos ao alternar
+                      setSelectedCoop(null);
+                      setCoopSugSearch('');
+                      setCoopSugShow(false);
+                      setSugManual({ name: '', document: '' });
+                    }}
+                  />
+                  <label htmlFor="inbase" className="text-sm font-bold text-gray-200">
+                    Cooperado está na base
+                  </label>
                 </div>
-              )}
 
-              {/* ===== Motivo ===== */}
-              <div className="mt-4">
-                <label className="text-xs text-gray-400 font-bold">Motivo da sugestão</label>
-                <textarea
-                  value={sugReason}
-                  onChange={(e) => setSugReason(e.target.value)}
-                  rows={3}
-                  className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Ex.: Cooperado sem movimentação há 60 dias, oportunidade RDC/LCA..."
-                />
+                {/* ===== Cooperado (Autocomplete se base, manual se não) ===== */}
+                {sugInBase ? (
+                  <div className="relative mt-4" ref={coopSugBoxRef}>
+                    <label className="text-xs text-gray-400 font-bold">Cooperado</label>
+
+                    <input
+                      value={coopSugSearch}
+                      onChange={(e) => {
+                        setCoopSugSearch(e.target.value);
+                        setCoopSugShow(true);
+                        setSelectedCoop(null);
+                      }}
+                      onFocus={() => setCoopSugShow(true)}
+                      className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Digite nome ou CPF/CNPJ..."
+                    />
+
+                    {coopSugShow && (
+                      <div className="absolute z-50 mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-lg max-h-64 overflow-auto">
+                        {loadingCoopSug ? (
+                          <div className="p-3 text-sm text-gray-400">Buscando cooperados...</div>
+                        ) : cooperadosOptions.length === 0 ? (
+                          <div className="p-3 text-sm text-gray-400">Nenhum cooperado encontrado.</div>
+                        ) : (
+                          cooperadosOptions.map((c: any) => {
+                            const displayName = c.name ?? c.nome ?? "Sem nome";
+                            const displayDoc = c.document ?? c.documento ?? "";
+
+                            return (
+                              <button
+                                key={c.id}
+                                type="button"
+                                className="w-full text-left px-4 py-3 hover:bg-gray-800"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  setSelectedCoop(c);
+                                  setCoopSugSearch(`${displayName}${displayDoc ? ` / ${displayDoc}` : ""}`);
+                                  setCoopSugShow(false);
+                                }}
+                              >
+                                <span className="text-sm text-gray-100">
+                                  <b>{displayName}</b>
+                                  <span className="text-gray-400">
+                                    {displayDoc ? ` / ${displayDoc}` : ""}
+                                  </span>
+                                </span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+
+                    <p className="mt-2 text-xs text-gray-500">
+                      {selectedCoop ? 'Cooperado selecionado.' : 'Digite para buscar e selecione na lista.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 font-bold">Nome (manual)</label>
+                      <input
+                        value={sugManual.name}
+                        onChange={(e) => setSugManual(p => ({ ...p, name: e.target.value }))}
+                        className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Digite o nome..."
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-gray-400 font-bold">CPF/CNPJ (manual)</label>
+                      <input
+                        value={sugManual.document}
+                        onChange={(e) => setSugManual(p => ({ ...p, document: e.target.value }))}
+                        className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="Digite o CPF/CNPJ..."
+                      />
+                    </div>
+
+                    <p className="text-xs text-gray-500">
+                      Este cooperado não será cadastrado na base, apenas na sugestão.
+                    </p>
+                  </div>
+                )}
+
+                {/* ===== Motivo ===== */}
+                <div className="mt-4">
+                  <label className="text-xs text-gray-400 font-bold">Motivo da sugestão</label>
+                  <textarea
+                    value={sugReason}
+                    onChange={(e) => setSugReason(e.target.value)}
+                    rows={3}
+                    className="mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Ex.: Cooperado sem movimentação há 60 dias, oportunidade RDC/LCA..."
+                  />
+                </div>
+
+                {/* ===== Salvar ===== */}
+                <button
+                  disabled={sugSubmitting}
+                  onClick={async () => {
+                    if (!selectedManager) return alert('Selecione um gerente.');
+                    if (!sugReason.trim()) return alert('Informe o motivo da sugestão.');
+
+                    if (sugInBase && !selectedCoop) return alert('Selecione um cooperado da base.');
+                    if (!sugInBase && !sugManual.name.trim()) return alert('Informe o nome do cooperado.');
+
+                    const cooperadoFinal = sugInBase
+                      ? selectedCoop
+                      : { name: sugManual.name.trim(), document: sugManual.document.trim() };
+
+                    setSugSubmitting(true);
+                    try {
+                      await props.onAddSuggestion({
+                        cooperado: cooperadoFinal,
+                        cooperadoInBase: sugInBase,
+                        manager: { id: selectedManager.id, name: selectedManager.name, agency: selectedManager.agency },
+                        suggestedAt: new Date(),
+                        suggestedBy: 'Manual',
+                        reason: sugReason.trim(),
+                      });
+
+                      // reset
+                      setSelectedManager(null);
+                      setSugManagerId('');
+                      setMgrSearch('');
+                      setMgrShow(false);
+
+                      setSugInBase(true);
+                      setSelectedCoop(null);
+                      setCoopSugSearch('');
+                      setCoopSugShow(false);
+                      setSugManual({ name: '', document: '' });
+
+                      setSugReason('');
+                      alert('Sugestão criada com sucesso!');
+                    } catch (e: any) {
+                      console.error(e);
+                      alert(e?.message || 'Erro ao criar sugestão.');
+                    } finally {
+                      setSugSubmitting(false);
+                    }
+                  }}
+                  className="mt-5 w-full bg-emerald-600 hover:bg-emerald-700 text-xs px-4 py-3 rounded-lg font-bold disabled:opacity-50 transition-colors"
+                >
+                  {sugSubmitting ? 'Salvando...' : 'Salvar sugestão'}
+                </button>
               </div>
 
-              {/* ===== Salvar ===== */}
-              <button
-                disabled={sugSubmitting}
-                onClick={async () => {
-                  if (!selectedManager) return alert('Selecione um gerente.');
-                  if (!sugReason.trim()) return alert('Informe o motivo da sugestão.');
+              {/* LISTA */}
+              <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
+                <h3 className="font-bold text-white mb-4">Sugestões cadastradas</h3>
 
-                  if (sugInBase && !selectedCoop) return alert('Selecione um cooperado da base.');
-                  if (!sugInBase && !sugManual.name.trim()) return alert('Informe o nome do cooperado.');
+                {props.suggestedVisits.length === 0 ? (
+                  <div className="text-sm text-gray-400">Nenhuma sugestão cadastrada.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {props.suggestedVisits
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        const da = a.suggestedAt instanceof Date ? a.suggestedAt : new Date(a.suggestedAt as any);
+                        const db = b.suggestedAt instanceof Date ? b.suggestedAt : new Date(b.suggestedAt as any);
+                        return db.getTime() - da.getTime();
+                      })
+                      .slice(0, 20)
+                      .map((s: any) => {
+                        const coop: any = s.cooperado || {};
+                        const cooperadoNome = (coop.name ?? coop.nome).toString().trim();
+                        const cooperadoDoc = (coop.document ?? coop.documento ?? '').toString().trim();
 
-                  const cooperadoFinal = sugInBase
-                    ? selectedCoop
-                    : { name: sugManual.name.trim(), document: sugManual.document.trim() };
-
-                  setSugSubmitting(true);
-                  try {
-                    await props.onAddSuggestion({
-                      cooperado: cooperadoFinal,
-                      cooperadoInBase: sugInBase,
-                      manager: { id: selectedManager.id, name: selectedManager.name, agency: selectedManager.agency },
-                      suggestedAt: new Date(),
-                      suggestedBy: 'Manual',
-                      reason: sugReason.trim(),
-                    });
-
-                    // reset
-                    setSelectedManager(null);
-                    setSugManagerId('');
-                    setMgrSearch('');
-                    setMgrShow(false);
-
-                    setSugInBase(true);
-                    setSelectedCoop(null);
-                    setCoopSugSearch('');
-                    setCoopSugShow(false);
-                    setSugManual({ name: '', document: '' });
-
-                    setSugReason('');
-                    alert('Sugestão criada com sucesso!');
-                  } catch (e: any) {
-                    console.error(e);
-                    alert(e?.message || 'Erro ao criar sugestão.');
-                  } finally {
-                    setSugSubmitting(false);
-                  }
-                }}
-                className="mt-5 w-full bg-emerald-600 hover:bg-emerald-700 text-xs px-4 py-3 rounded-lg font-bold disabled:opacity-50 transition-colors"
-              >
-                {sugSubmitting ? 'Salvando...' : 'Salvar sugestão'}
-              </button>
-            </div>
-
-            {/* LISTA */}
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-              <h3 className="font-bold text-white mb-4">Sugestões cadastradas</h3>
-
-              {props.suggestedVisits.length === 0 ? (
-                <div className="text-sm text-gray-400">Nenhuma sugestão cadastrada.</div>
-              ) : (
-                <div className="space-y-3">
-                  {props.suggestedVisits
-                    .slice()
-                    .sort((a: any, b: any) => {
-                      const da = a.suggestedAt instanceof Date ? a.suggestedAt : new Date(a.suggestedAt as any);
-                      const db = b.suggestedAt instanceof Date ? b.suggestedAt : new Date(b.suggestedAt as any);
-                      return db.getTime() - da.getTime();
-                    })
-                    .slice(0, 20)
-                    .map((s: any) => {
-                      const coop: any = s.cooperado || {};
-                      const cooperadoNome = (coop.name ?? coop.nome).toString().trim();
-                      const cooperadoDoc = (coop.document ?? coop.documento ?? '').toString().trim();
-
-                      return (
-                        <div
-                          key={s.id}
-                          className="bg-gray-900 border border-gray-700 rounded-lg p-4 flex justify-between gap-4"
-                        >
-                          <div className="min-w-0">
-                            <div className="text-sm font-bold text-gray-100 truncate">
-                              {cooperadoNome}
-                              {s.cooperadoInBase === false ? ' (manual)' : ''}
-                            </div>
-
-                            {cooperadoDoc && (
-                              <div className="text-[11px] text-gray-400 truncate">
-                                {cooperadoDoc}
-                              </div>
-                            )}
-
-                            <div className="text-[11px] text-gray-400 truncate">
-                              Gerente: {s.manager?.name || '—'} — PA {s.manager?.agency || '—'}
-                            </div>
-
-                            <div className="text-xs text-gray-300 mt-2 line-clamp-2">
-                              {s.reason}
-                            </div>
-                          </div>
-
-                          <button
-                            onClick={() => props.onRemoveSuggestion(s.id)}
-                            className="bg-red-600 hover:bg-red-700 text-xs px-3 py-2 rounded-lg font-bold h-fit transition-colors"
+                        return (
+                          <div
+                            key={s.id}
+                            className="bg-gray-900 border border-gray-700 rounded-lg p-4 flex justify-between gap-4"
                           >
-                            Remover
-                          </button>
-                        </div>
-                      );
-                    })}
-                </div>
-              )}
+                            <div className="min-w-0">
+                              <div className="text-sm font-bold text-gray-100 truncate">
+                                {cooperadoNome}
+                                {s.cooperadoInBase === false ? ' (manual)' : ''}
+                              </div>
+
+                              {cooperadoDoc && (
+                                <div className="text-[11px] text-gray-400 truncate">
+                                  {cooperadoDoc}
+                                </div>
+                              )}
+
+                              <div className="text-[11px] text-gray-400 truncate">
+                                Gerente: {s.manager?.name || '—'} — PA {s.manager?.agency || '—'}
+                              </div>
+
+                              <div className="text-xs text-gray-300 mt-2 line-clamp-2">
+                                {s.reason}
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={() => props.onRemoveSuggestion(s.id)}
+                              className="bg-red-600 hover:bg-red-700 text-xs px-3 py-2 rounded-lg font-bold h-fit transition-colors"
+                            >
+                              Remover
+                            </button>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-    </main>
+      </main>
 
-      { isUserModal && <UserFormModal user={modalUser} onSave={(u) => { modalUser ? props.onUpdateUser(modalUser.id, u) : props.onAddUser(u); setIsUserModal(false); }} onClose={() => setIsUserModal(false)} /> }
-  { isCoopModal && <CooperadoFormModal cooperado={modalCoop ? normalizeCooperado(modalCoop) : null} managers={props.users} onSave={(c) => { modalCoop ? props.onUpdateCooperado(modalCoop.id, c) : props.onAddCooperado(c); setIsCoopModal(false); }} onClose={() => setIsCoopModal(false)} /> }
+      {isUserModal && <UserFormModal user={modalUser} onSave={(u) => { modalUser ? props.onUpdateUser(modalUser.id, u) : props.onAddUser(u); setIsUserModal(false); }} onClose={() => setIsUserModal(false)} />}
+      {isCoopModal && <CooperadoFormModal cooperado={modalCoop ? normalizeCooperado(modalCoop) : null} managers={props.users} onSave={(c) => { modalCoop ? props.onUpdateCooperado(modalCoop.id, c) : props.onAddCooperado(c); setIsCoopModal(false); }} onClose={() => setIsCoopModal(false)} />}
     </div>
   );
 };

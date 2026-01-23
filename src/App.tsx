@@ -42,6 +42,30 @@ function toDate(value: any): Date {
   return new Date(value);
 }
 
+type DaysBucket = "<70" | "70-90" | "90-180" | "180-360" | ">360";
+
+function daysAgoDate(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function getDateRangeForBucket(bucket: DaysBucket) {
+  const now = new Date();
+
+  // start/end para query
+  if (bucket === "<70") return { start: daysAgoDate(70), end: now, mode: "range" as const };
+  if (bucket === "70-90") return { start: daysAgoDate(90), end: daysAgoDate(70), mode: "range" as const };
+  if (bucket === "90-180") return { start: daysAgoDate(180), end: daysAgoDate(90), mode: "range" as const };
+  if (bucket === "180-360") return { start: daysAgoDate(360), end: daysAgoDate(180), mode: "range" as const };
+
+  // >360: Firestore não faz "NOT in range" direto com orderBy+limit do jeito ideal.
+  // A abordagem mais barata é buscar "até 360 dias atrás" com where(date, "<=", cutoff)
+  // e ainda assim limitar.
+  return { start: null, end: daysAgoDate(360), mode: "older" as const };
+}
+
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [passwordModalUser, setPasswordModalUser] = useState<User | null>(null);
@@ -53,6 +77,10 @@ const App: React.FC = () => {
   const [visits, setVisits] = useState<Visit[]>([]);
   const [suggestedVisits, setSuggestedVisits] = useState<SuggestedVisit[]>([]);
 
+  type DaysBucket = "<70" | "70-90" | "90-180" | "180-360" | ">360";
+
+  const [mapDaysBucket, setMapDaysBucket] = useState<DaysBucket>("<70"); // default econômico
+
   //Função de callback para search de cooperados
   const normalizePA = (pa: string) => (pa ?? "").trim().replace(/^0+(?=\d)/, "");
 
@@ -61,7 +89,7 @@ const App: React.FC = () => {
   function normalizeDoc(doc: string) {
     return (doc ?? "").replace(/\D/g, "").trim(); // só dígitos, mantém zeros
   }
-  
+
   //função buscar os cooperados com filtro
   const searchCooperados = useCallback(
     async (pa: string, term: string): Promise<Cooperado[]> => {
@@ -175,16 +203,13 @@ const App: React.FC = () => {
   const fetchData = useCallback(async (user: User) => {
     setLoading(true);
     try {
-      const isDev = user.role === "Desenvolvedor" || user.role === "Admin";
-
-      const visitsQ = isDev
-        ? query(collection(db, "visits"), orderBy("date", "desc"), limit(50))
-        : query(
-          collection(db, "visits"),
-          where("manager.id", "==", user.id),
-          orderBy("date", "desc"),
-          limit(50)
-        );
+      const isDev = user.role === "Desenvolvedor" || user.role === "Admin"; 
+      const visitsQ = isDev ? query(collection(db, "visits"), orderBy("date", "desc"), limit(200))
+      : query(collection(db, "visits"), 
+      where("manager.id", "==", user.id), 
+      orderBy("date", "desc"), 
+      limit(50)
+    );
 
       const suggQ = isDev
         ? query(collection(db, "suggestedVisits"), orderBy("suggestedAt", "desc"), limit(50))

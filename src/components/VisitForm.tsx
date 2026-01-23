@@ -250,14 +250,19 @@ const VisitForm: React.FC<VisitFormProps> = ({
       };
     } else if (prefilledCooperado?.id) {
       const raw: any = prefilledCooperado;
-      cooperado = {
-        id: raw.id,
-        name: raw.name ?? raw.nome ?? "Sem nome",
-        document: raw.document ?? raw.documento ?? "",
-        isPortfolio: Boolean(raw.isPortfolio ?? false),
-        managerName: raw.managerName ?? raw.nome_gerente,
-        agency: raw.agency,
-      };
+      const base: Cooperado = {
+      id: raw.id,
+      name: raw.name ?? raw.nome ?? "Sem nome",
+      document: raw.document ?? raw.documento ?? "",
+      isPortfolio: Boolean(raw.isPortfolio ?? false),
+      managerName: raw.managerName ?? raw.nome_gerente,
+    };
+
+    // ✅ não enviar agency undefined (Firestore não aceita)
+    cooperado =
+      raw.agency != null && String(raw.agency).trim() !== ""
+        ? { ...base, agency: String(raw.agency) }
+        : base;
     } else {
       if (!selectedCooperado?.id) {
         alert("Selecione um cooperado da lista.");
