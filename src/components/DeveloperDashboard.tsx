@@ -72,16 +72,12 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
 
 
   const [mapManagerId, setMapManagerId] = useState<string>(""); // sem filtro
-  const [mapManagerName, setMapManagerName] = useState("");
   const [mapWalletManager, setMapWalletManager] = useState<string>("");
   // PA: "" = todos, ou "0".."5"
   const [mapPA, setMapPA] = useState<string>("");
   const [mapDays, setMapDays] = useState<DaysBucket>("<70"); // default econômico
-const [mapVisits, setMapVisits] = useState<Visit[]>([]);
-const [mapLoading, setMapLoading] = useState(false);
-
-  // meses para trás (default = 1 = mês anterior)
-  const [mapMonthsBack, setMapMonthsBack] = useState<number>(1);
+  const [mapVisits, setMapVisits] = useState<Visit[]>([]);
+  const [mapLoading, setMapLoading] = useState(false);
 
   useEffect(() => {
     // sempre que entrar na aba ou a lista mudar, volta para a primeira página
@@ -89,57 +85,57 @@ const [mapLoading, setMapLoading] = useState(false);
   }, [tab, props.users]);
 
   useEffect(() => {
-  if (tab !== "map") return;
+    if (tab !== "map") return;
 
-  let cancelled = false;
+    let cancelled = false;
 
-  (async () => {
-    setMapLoading(true);
-    try {
-      const { mode, start, end } = getBucketRange(mapDays);
+    (async () => {
+      setMapLoading(true);
+      try {
+        const { mode, start, end } = getBucketRange(mapDays);
 
-      // ajuste o limit conforme seu uso
-      const MAP_LIMIT = 1000;
+        // ajuste o limit conforme seu uso
+        const MAP_LIMIT = 1000;
 
-      let q;
+        let q;
 
-      if (mode === "range") {
-        q = query(
-          collection(db, "visits"),
-          where("date", ">=", Timestamp.fromDate(start!)),
-          where("date", "<", Timestamp.fromDate(end!)),
-          orderBy("date", "desc"),
-          limit(MAP_LIMIT)
-        );
-      } else {
-        // >360
-        q = query(
-          collection(db, "visits"),
-          where("date", "<", Timestamp.fromDate(end!)),
-          orderBy("date", "desc"),
-          limit(MAP_LIMIT)
-        );
+        if (mode === "range") {
+          q = query(
+            collection(db, "visits"),
+            where("date", ">=", Timestamp.fromDate(start!)),
+            where("date", "<", Timestamp.fromDate(end!)),
+            orderBy("date", "desc"),
+            limit(MAP_LIMIT)
+          );
+        } else {
+          // >360
+          q = query(
+            collection(db, "visits"),
+            where("date", "<", Timestamp.fromDate(end!)),
+            orderBy("date", "desc"),
+            limit(MAP_LIMIT)
+          );
+        }
+
+        const snap = await getDocs(q);
+        const rows = snap.docs.map((d) => {
+          const data = d.data() as any;
+          return { ...data, id: d.id, date: toDate(data.date) } as Visit;
+        });
+
+        if (!cancelled) setMapVisits(rows);
+      } catch (err) {
+        console.error("Erro fetch mapa:", err);
+        if (!cancelled) setMapVisits([]);
+      } finally {
+        if (!cancelled) setMapLoading(false);
       }
+    })();
 
-      const snap = await getDocs(q);
-      const rows = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return { ...data, id: d.id, date: toDate(data.date) } as Visit;
-      });
-
-      if (!cancelled) setMapVisits(rows);
-    } catch (err) {
-      console.error("Erro fetch mapa:", err);
-      if (!cancelled) setMapVisits([]);
-    } finally {
-      if (!cancelled) setMapLoading(false);
-    }
-  })();
-
-  return () => {
-    cancelled = true;
-  };
-}, [tab, mapDays]);
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, mapDays]);
 
   const usersTotalPages = useMemo(() => {
     const total = (props.users || []).length;
@@ -295,6 +291,14 @@ const [mapLoading, setMapLoading] = useState(false);
   const [reportStart, setReportStart] = useState<string>(''); // yyyy-mm-dd
   const [reportEnd, setReportEnd] = useState<string>(''); // yyyy-mm-dd
 
+  // ✅ filtros aplicados (só mudam quando clicar no botão)
+  const [appliedPA, setAppliedPA] = useState<string>('');
+  const [appliedGerente, setAppliedGerente] = useState<string>('');
+  const [appliedProduto, setAppliedProduto] = useState<string>('');
+  const [appliedBusca, setAppliedBusca] = useState<string>('');
+  const [appliedStart, setAppliedStart] = useState<string>('');
+  const [appliedEnd, setAppliedEnd] = useState<string>('');
+
   function normalizeTextStrict(text: string) {
     return (text || '')
       .toString()
@@ -313,21 +317,21 @@ const [mapLoading, setMapLoading] = useState(false);
   }
 
   function daysAgoDate(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
 
 
-function getBucketRange(bucket: DaysBucket) {
-  const now = new Date();
-  if (bucket === "<70") return { mode: "range" as const, start: daysAgoDate(70), end: now };
-  if (bucket === "70-90") return { mode: "range" as const, start: daysAgoDate(90), end: daysAgoDate(70) };
-  if (bucket === "90-180") return { mode: "range" as const, start: daysAgoDate(180), end: daysAgoDate(90) };
-  if (bucket === "180-360") return { mode: "range" as const, start: daysAgoDate(360), end: daysAgoDate(180) };
-  return { mode: "older" as const, start: null, end: daysAgoDate(360) }; // >360
-}
+  function getBucketRange(bucket: DaysBucket) {
+    const now = new Date();
+    if (bucket === "<70") return { mode: "range" as const, start: daysAgoDate(70), end: now };
+    if (bucket === "70-90") return { mode: "range" as const, start: daysAgoDate(90), end: daysAgoDate(70) };
+    if (bucket === "90-180") return { mode: "range" as const, start: daysAgoDate(180), end: daysAgoDate(90) };
+    if (bucket === "180-360") return { mode: "range" as const, start: daysAgoDate(360), end: daysAgoDate(180) };
+    return { mode: "older" as const, start: null, end: daysAgoDate(360) }; // >360
+  }
   function inBucket(days: number, bucket: DaysBucket) {
     if (!bucket) return true;
     if (bucket === "<70") return days < 70;
@@ -343,19 +347,6 @@ function getBucketRange(bucket: DaysBucket) {
     return new Date(value);
   }
 
-  function startOfMonth(d: Date) {
-    return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
-  }
-
-  function addMonths(d: Date, delta: number) {
-    return new Date(d.getFullYear(), d.getMonth() + delta, 1, 0, 0, 0, 0);
-  }
-
-  // Ex: monthsBack=1 => start = início do mês anterior
-  const now = new Date();
-  const rangeStart = startOfMonth(addMonths(now, -mapMonthsBack));
-  const rangeEnd = now;
-
   const paOptions = useMemo(() => {
     const fromUsers = props.users.map(u => (u.agency || '').trim()).filter(Boolean);
     const fromCoops = props.cooperados.map(c => ((c as any).agency || '').toString().trim()).filter(Boolean);
@@ -366,39 +357,34 @@ function getBucketRange(bucket: DaysBucket) {
   const produtoOptions = ['Consórcio', 'Seguro', 'Investimentos', 'Crédito', 'Previdência', 'Compliance', 'Cobrança', 'SIPAG'] as const;
 
   const filteredVisits = useMemo(() => {
-    const s = reportStart ? new Date(`${reportStart}T00:00:00`) : null;
-    const e = reportEnd ? new Date(`${reportEnd}T23:59:59`) : null;
-    const q = normalizeTextStrict(reportBusca);
-    const qDigits = reportBusca.replace(/\D/g, '');
+    const s = appliedStart ? new Date(`${appliedStart}T00:00:00`) : null;
+    const e = appliedEnd ? new Date(`${appliedEnd}T23:59:59`) : null;
+    const q = normalizeTextStrict(appliedBusca);
+    const qDigits = appliedBusca.replace(/\D/g, '');
 
     return props.visits.filter(v => {
-      // Datas
       if (s && v.date < s) return false;
       if (e && v.date > e) return false;
 
-      // PA (usa agência do gerente; se existir agência do cooperado, também aceita)
-      if (reportPA) {
+      if (appliedPA) {
         const paVisit = (v.manager?.agency || '').toString().trim();
         const paCoop = ((v.cooperado as any)?.agency || '').toString().trim();
-        if (paVisit !== reportPA && paCoop !== reportPA) return false;
+        if (paVisit !== appliedPA && paCoop !== appliedPA) return false;
       }
 
-      // Gerente
-      if (reportGerente) {
+      if (appliedGerente) {
         const g = (v.manager?.name || '').toString().trim();
-        if (g !== reportGerente) return false;
+        if (g !== appliedGerente) return false;
       }
 
-      // Produto (visita pode ter vários produtos: products: ProductDetail[])
-      if (reportProduto) {
+      if (appliedProduto) {
         const prods = (v as any).products;
         const match =
           Array.isArray(prods) &&
-          prods.some((p: any) => (p?.product ?? '').toString().trim() === reportProduto);
-
+          prods.some((p: any) => (p?.product ?? '').toString().trim() === appliedProduto);
         if (!match) return false;
       }
-      // Busca (nome ou documento)
+
       if (q || qDigits) {
         const coopName = normalizeTextStrict((v.cooperado as any)?.name || (v.cooperado as any)?.nome || '');
         const coopDoc = ((v.cooperado as any)?.document || (v.cooperado as any)?.documento || '').toString();
@@ -412,16 +398,16 @@ function getBucketRange(bucket: DaysBucket) {
 
       return true;
     });
-  }, [props.visits, reportPA, reportGerente, reportProduto, reportBusca, reportStart, reportEnd]);
+  }, [props.visits, appliedPA, appliedGerente, appliedProduto, appliedBusca, appliedStart, appliedEnd]);
 
   //last visit
   const lastVisits = useMemo(() => {
     const m = new Map<string, any>();
 
-    for (const v of props.visits) {
+    for (const v of mapVisits as any[]) {
       const doc = (v?.cooperado?.document ?? "").replace(/\D/g, "").trim();
       const d = toDate((v as any)?.date);
-      if (!doc) continue;
+      if (!doc || !d) continue;
 
       const prev = m.get(doc);
       const prevDate = prev ? toDate((prev as any)?.date) : null;
@@ -434,51 +420,33 @@ function getBucketRange(bucket: DaysBucket) {
     return Array.from(m.values());
   }, [mapVisits]);
 
-const filteredMapVisits = useMemo(() => {
-  const now = new Date();
-  const rangeStart = startOfMonth(addMonths(now, -mapMonthsBack));
-  const startMs = rangeStart.getTime();
-  const endMs = now.getTime();
+  const filteredMapVisits = useMemo(() => {
+    const walletQ = normalizeTextStrict(mapWalletManager);
 
-  const walletQ = normalizeTextStrict(mapWalletManager); // se você tiver carteira
+    return lastVisits.filter((v: any) => {
+      // 1) usuário (registrador)
+      if (mapManagerId && (v?.manager?.id || "") !== mapManagerId) return false;
 
-  return lastVisits.filter((v: any) => {
-    // 1) usuário (registrador)
-    if (mapManagerId && (v?.manager?.id || "") !== mapManagerId) return false;
+      // 2) carteira (gerente dono)
+      if (walletQ) {
+        const walletName = v?.cooperado?.managerName ?? v?.cooperado?.nome_gerente ?? "";
+        if (normalizeTextStrict(String(walletName || "")) !== walletQ) return false;
+      }
 
-    // 2) carteira (opcional)
-    if (walletQ) {
-      const walletName = v?.cooperado?.managerName ?? v?.cooperado?.nome_gerente ?? "";
-      if (normalizeTextStrict(String(walletName || "")) !== walletQ) return false;
-    }
+      // 3) PA (vou considerar PA = manager.agency)
+      if (mapPA) {
+        const pa = String(v?.manager?.agency ?? "").trim();
+        if (pa !== mapPA) return false;
+      }
 
-    // 3) PA (onde está o PA? escolha 1 fonte)
-    // Preferência: salvar em visit.PA ou visit.manager.agency ou visit.cooperado.PA
-    if (mapPA) {
-      const pa =
-        String(v?.PA ?? v?.manager?.agency ?? v?.cooperado?.PA ?? "");
-      if (pa !== mapPA) return false;
-    }
+      // 4) período (bucket)
+      const dt = toDate(v?.date);
+      const days = daysAgo(dt);
+      if (!inBucket(days, mapDays)) return false;
 
-    // 4) data (janela por meses)
-    const dt = toDate(v?.date); // seu helper
-    const t = dt?.getTime?.() ?? 0;
-    if (t < startMs || t > endMs) return false;
-
-    // 5) seu bucket antigo (mapDays) se ainda quiser
-    const days = daysAgo(dt);
-    if (!inBucket(days, mapDays)) return false;
-
-    return true;
-  });
-}, [
-  lastVisits,
-  mapManagerId,
-  mapWalletManager,
-  mapPA,
-  mapMonthsBack,
-  mapDays,
-]);
+      return true;
+    });
+  }, [lastVisits, mapManagerId, mapWalletManager, mapPA, mapDays]);
 
 
   //opções de visita
@@ -620,11 +588,11 @@ const filteredMapVisits = useMemo(() => {
     const title = 'Relatório de Visitas - Sicoob Cooprem';
     const stamp = new Date().toLocaleString('pt-BR');
     const filters = [
-      reportPA ? `PA: ${reportPA}` : null,
-      reportGerente ? `Gerente: ${reportGerente}` : null,
-      reportBusca ? `Busca: ${reportBusca}` : null,
-      reportStart ? `De: ${reportStart}` : null,
-      reportEnd ? `Até: ${reportEnd}` : null,
+      appliedPA ? `PA: ${appliedPA}` : null,
+      appliedGerente ? `Gerente: ${appliedGerente}` : null,
+      appliedBusca ? `Busca: ${appliedBusca}` : null,
+      appliedStart ? `De: ${appliedStart}` : null,
+      appliedEnd ? `Até: ${appliedEnd}` : null,
     ].filter(Boolean).join(' · ');
 
     const rows = filteredVisits
@@ -745,21 +713,56 @@ const filteredMapVisits = useMemo(() => {
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
             <div>
               <h2 className="text-2xl font-bold">Relatório de Visitas</h2>
-              <p className="text-sm text-gray-400 mt-1">Filtre por PA, gerente, cooperado/CPF-CNPJ e período. Depois, gere CSV ou imprima para salvar em PDF.</p>
+              <p className="text-sm text-gray-400 mt-1">
+                Filtre por PA, gerente, cooperado/CPF-CNPJ e período. Depois, gere CSV ou imprima para salvar em PDF.
+              </p>
             </div>
+
             <div className="flex flex-wrap gap-2">
+              {/* ✅ novo: aplica filtros */}
               <button
                 onClick={() => {
+                  setAppliedPA(reportPA);
+                  setAppliedGerente(reportGerente);
+                  setAppliedProduto(reportProduto);
+                  setAppliedBusca(reportBusca);
+                  setAppliedStart(reportStart);
+                  setAppliedEnd(reportEnd);
+                }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-xs px-4 py-2 rounded-lg font-bold"
+                title="Aplica os filtros para recalcular a tabela/estatísticas"
+              >
+                ✅ Aplicar filtros
+              </button>
+
+              <button
+                onClick={() => {
+                  // draft
                   setReportPA('');
                   setReportGerente('');
+                  setReportProduto('');
                   setReportBusca('');
                   setReportStart('');
                   setReportEnd('');
+
+                  // applied
+                  setAppliedPA('');
+                  setAppliedGerente('');
+                  setAppliedProduto('');
+                  setAppliedBusca('');
+                  setAppliedStart('');
+                  setAppliedEnd('');
+
+                  // autocomplete gerente
+                  setMgrSearch('');
+                  setSelectedManager(null);
+                  setMgrShow(false);
                 }}
                 className="bg-gray-700 hover:bg-gray-600 text-xs px-4 py-2 rounded-lg font-bold"
               >
                 Limpar filtros
               </button>
+
               <button
                 onClick={downloadCSV}
                 className="bg-emerald-600 hover:bg-emerald-700 text-xs px-4 py-2 rounded-lg font-bold"
@@ -768,6 +771,7 @@ const filteredMapVisits = useMemo(() => {
               >
                 ⬇️ Baixar CSV
               </button>
+
               <button
                 onClick={printReport}
                 className="bg-blue-600 hover:bg-blue-700 text-xs px-4 py-2 rounded-lg font-bold"
@@ -782,22 +786,30 @@ const filteredMapVisits = useMemo(() => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
             <div>
               <label className="text-xs text-gray-400 font-bold">PA</label>
-              <select value={reportPA} onChange={(e) => setReportPA(e.target.value)} className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+              <select
+                value={reportPA}
+                onChange={(e) => setReportPA(e.target.value)}
+                className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+              >
                 <option value="">Todos</option>
-                {paOptions.map(pa => (<option key={pa} value={pa}>{pa}</option>))}
+                {paOptions.map((pa) => (
+                  <option key={pa} value={pa}>
+                    {pa}
+                  </option>
+                ))}
               </select>
             </div>
+
             <div>
               <label className="text-xs text-gray-400 font-bold">Nome do gerente</label>
               <div className="relative" ref={mgrBoxRef}>
-                <label className="text-xs text-gray-400 font-bold">Gerente</label>
-
                 <input
                   value={mgrSearch}
                   onChange={(e) => {
                     setMgrSearch(e.target.value);
                     setMgrShow(true);
                     setSelectedManager(null);
+                    setReportGerente(''); // ✅ digitando não fixa gerente
                   }}
                   onFocus={() => setMgrShow(true)}
                   placeholder="Digite o nome do gerente..."
@@ -817,6 +829,7 @@ const filteredMapVisits = useMemo(() => {
                           onClick={() => {
                             setSelectedManager(g);
                             setMgrSearch(g.name);
+                            setReportGerente(g.name); // ✅ agora o filtro de gerente funciona
                             setMgrShow(false);
                           }}
                           className="w-full text-left px-4 py-3 hover:bg-gray-800"
@@ -833,25 +846,67 @@ const filteredMapVisits = useMemo(() => {
                 </p>
               </div>
             </div>
+
             <div>
               <div>
                 <label className="text-xs text-gray-400 font-bold">Produto</label>
-                <select value={reportProduto} onChange={(e) => setReportProduto(e.target.value)} className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+                <select
+                  value={reportProduto}
+                  onChange={(e) => setReportProduto(e.target.value)}
+                  className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                >
                   <option value="">Todos</option>
-                  {produtoOptions.map(p => (<option key={p} value={p}>{p}</option>))}
+                  {produtoOptions.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
                 </select>
               </div>
+
               <label className="text-xs text-gray-400 font-bold">Cooperado / CPF-CNPJ / resumo</label>
-              <input value={reportBusca} onChange={(e) => setReportBusca(e.target.value)} placeholder="Digite nome, CPF/CNPJ ou palavra do resumo" className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm" />
+              <input
+                value={reportBusca}
+                onChange={(e) => setReportBusca(e.target.value)}
+                placeholder="Digite nome, CPF/CNPJ ou palavra do resumo"
+                className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+              />
             </div>
+
             <div>
               <label className="text-xs text-gray-400 font-bold">Data inicial</label>
-              <input type="date" value={reportStart} onChange={(e) => setReportStart(e.target.value)} className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm" />
+              <input
+                type="date"
+                value={reportStart}
+                onChange={(e) => setReportStart(e.target.value)}
+                className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+              />
             </div>
+
             <div>
               <label className="text-xs text-gray-400 font-bold">Data final</label>
-              <input type="date" value={reportEnd} onChange={(e) => setReportEnd(e.target.value)} className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm" />
+              <input
+                type="date"
+                value={reportEnd}
+                onChange={(e) => setReportEnd(e.target.value)}
+                className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+              />
             </div>
+          </div>
+
+          {/* 🔎 dica do que está aplicado */}
+          <div className="mb-4 text-xs text-gray-400">
+            <b>Filtros aplicados:</b>{" "}
+            {[
+              appliedPA ? `PA: ${appliedPA}` : null,
+              appliedGerente ? `Gerente: ${appliedGerente}` : null,
+              appliedProduto ? `Produto: ${appliedProduto}` : null,
+              appliedBusca ? `Busca: ${appliedBusca}` : null,
+              appliedStart ? `De: ${appliedStart}` : null,
+              appliedEnd ? `Até: ${appliedEnd}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "—"}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -865,11 +920,15 @@ const filteredMapVisits = useMemo(() => {
             </div>
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
               <p className="text-xs text-gray-400 font-bold">PA com mais visitas</p>
-              <p className="text-sm font-bold mt-2 text-gray-200">{reportStats.topPA ? `${reportStats.topPA.name} (${reportStats.topPA.count})` : '—'}</p>
+              <p className="text-sm font-bold mt-2 text-gray-200">
+                {reportStats.topPA ? `${reportStats.topPA.name} (${reportStats.topPA.count})` : '—'}
+              </p>
             </div>
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
               <p className="text-xs text-gray-400 font-bold">Gerente com mais visitas</p>
-              <p className="text-sm font-bold mt-2 text-gray-200">{reportStats.topManager ? `${reportStats.topManager.name} (${reportStats.topManager.count})` : '—'}</p>
+              <p className="text-sm font-bold mt-2 text-gray-200">
+                {reportStats.topManager ? `${reportStats.topManager.name} (${reportStats.topManager.count})` : '—'}
+              </p>
             </div>
           </div>
 
@@ -887,12 +946,13 @@ const filteredMapVisits = useMemo(() => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
-                {visibleVisits.map(v => {
+                {visibleVisits.map((v) => {
                   const d = v.date instanceof Date ? v.date : new Date(v.date as any);
                   const pa = (v.manager?.agency || ((v.cooperado as any)?.agency) || '').toString().trim();
                   const gerente = (v.manager?.name || '').toString().trim();
                   const nome = ((v.cooperado as any)?.name || '').toString().trim();
                   const doc = ((v.cooperado as any)?.document || '').toString().trim();
+
                   return (
                     <tr key={v.id} className="hover:bg-gray-800/50 transition-colors">
                       <td className="py-4 font-mono text-xs text-gray-300">{d.toLocaleDateString('pt-BR')}</td>
@@ -900,26 +960,32 @@ const filteredMapVisits = useMemo(() => {
                       <td className="py-4 text-sm font-bold">{gerente || '—'}</td>
                       <td className="py-4 text-sm">{nome || '—'}</td>
                       <td className="py-4 text-xs font-mono text-gray-400">{doc || '—'}</td>
-                      <td className="py-4 text-sm text-gray-300">{(() => {
-                        const prods = (v as any).products;
-                        if (!Array.isArray(prods) || prods.length === 0) return '—';
-                        const names = prods
-                          .map((p: any) => (p?.product ?? '').toString().trim())
-                          .filter(Boolean);
-                        const uniq = Array.from(new Set(names));
-                        return uniq.join(', ') || '—';
-                      })()}</td>
+                      <td className="py-4 text-sm text-gray-300">
+                        {(() => {
+                          const prods = (v as any).products;
+                          if (!Array.isArray(prods) || prods.length === 0) return '—';
+                          const names = prods
+                            .map((p: any) => (p?.product ?? '').toString().trim())
+                            .filter(Boolean);
+                          const uniq = Array.from(new Set(names));
+                          return uniq.join(', ') || '—';
+                        })()}
+                      </td>
                       <td className="py-4 text-sm text-gray-300">{v.summary || '—'}</td>
                     </tr>
                   );
                 })}
+
                 {filteredVisits.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-10 text-center text-gray-400">Nenhuma visita encontrada com os filtros atuais.</td>
+                    <td colSpan={7} className="py-10 text-center text-gray-400">
+                      Nenhuma visita encontrada com os filtros atuais.
+                    </td>
                   </tr>
                 )}
               </tbody>
             </table>
+
             {filteredVisits.length > 50 && (
               <div className="mt-3 text-xs text-gray-400">
                 Exibindo apenas as <b>50</b> visitas mais recentes na tela. O download CSV/Impressão considera <b>todas</b> as visitas filtradas.
@@ -1066,35 +1132,23 @@ const filteredMapVisits = useMemo(() => {
               </select>
 
               <select
-                value={mapMonthsBack}
-                onChange={(e) => setMapMonthsBack(Number(e.target.value))}
-                className="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm"
-              >
-                <option value={1}>Mês anterior (padrão)</option>
-                <option value={2}>Últimos 2 meses</option>
-                <option value={3}>Últimos 3 meses</option>
-                <option value={6}>Últimos 6 meses</option>
-                <option value={12}>Últimos 12 meses</option>
-              </select>
-
-              <select
                 value={mapDays}
                 onChange={(e) => setMapDays(e.target.value as any)}
                 className="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm"
               >
-                <option value="">Todos os períodos</option>
                 <option value="<70">&lt; 70 dias</option>
                 <option value="70-90">70–90 dias</option>
-                <option value=">90">&gt; 90 dias</option>
+                <option value="90-180">90–180 dias</option>
+                <option value="180-360">180–360 dias</option>
+                <option value=">360">&gt; 360 dias</option>
               </select>
 
               <button
                 onClick={() => {
                   setMapManagerId("");
                   setMapWalletManager("");
-                  setMapDays("");
+                  setMapDays("<70");
                   setMapPA("");
-                  setMapMonthsBack(1);
                 }}
                 className="ml-auto text-xs font-bold text-gray-300 hover:text-white"
               >
