@@ -694,6 +694,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
       'cpf_cnpj',
       'resumo',
       'prospeccao',
+      'na_agencia',
       ...allProducts.map(p => `produto_${slug(p)}`)
     ].join(';');
 
@@ -715,6 +716,9 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
       const isProspeccao = (v.cooperado as any)?.id === 'prospeccao';
       const prospeccaoFlag = isProspeccao ? 'SIM' : '';
 
+      // FLAG AGÊNCIA
+      const naAgenciaFlag = (v as any).inAgency === true ? 'SIM' : '';
+
       // 🔹 PRODUTOS
       const produtosDaVisita = new Set((v.products || []).map(p => p.product));
       const produtoCols = allProducts.map(p =>
@@ -731,6 +735,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
         safe(doc),
         safe(resumo),
         safe(prospeccaoFlag),
+        safe(naAgenciaFlag), // flag agencia
         ...produtoCols.map(x => safe(x))
       ].join(';');
     });
