@@ -16,6 +16,13 @@ import {
   Timestamp,
 } from "firebase/firestore";
 
+import {
+  toInputDate,
+  startOfCurrentMonth,
+  endOfToday,
+  isRangeWithinMaxMonths
+} from "../utils/dates";
+
 import { db } from "../firebase/firebaseConfig";
 
 interface DeveloperDashboardProps {
@@ -288,16 +295,35 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   const [reportGerente, setReportGerente] = useState<string>('');
   const [reportProduto, setReportProduto] = useState<string>('');
   const [reportBusca, setReportBusca] = useState<string>('');
-  const [reportStart, setReportStart] = useState<string>(''); // yyyy-mm-dd
-  const [reportEnd, setReportEnd] = useState<string>(''); // yyyy-mm-dd
+  const [reportStart, setReportStart] = useState<string>(() => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    return toInputDate(start);
+  });
+
+  const [reportEnd, setReportEnd] = useState<string>(() => {
+    return toInputDate(new Date()); // hoje
+  });
+  const [reportError, setReportError] = useState<string>("");
 
   // ✅ filtros aplicados (só mudam quando clicar no botão)
   const [appliedPA, setAppliedPA] = useState<string>('');
   const [appliedGerente, setAppliedGerente] = useState<string>('');
   const [appliedProduto, setAppliedProduto] = useState<string>('');
   const [appliedBusca, setAppliedBusca] = useState<string>('');
-  const [appliedStart, setAppliedStart] = useState<string>('');
-  const [appliedEnd, setAppliedEnd] = useState<string>('');
+  const [appliedStart, setAppliedStart] = useState<string>(() => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    return toInputDate(start);
+  });
+
+  const [appliedEnd, setAppliedEnd] = useState<string>(() => {
+    return toInputDate(new Date());
+  });
+
+  //função de busca
+  const defaultStartStr = toInputDate(startOfCurrentMonth());
+  const defaultEndStr = toInputDate(new Date()); // hoje (só data)
 
   function normalizeTextStrict(text: string) {
     return (text || '')
@@ -332,6 +358,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     if (bucket === "180-360") return { mode: "range" as const, start: daysAgoDate(360), end: daysAgoDate(180) };
     return { mode: "older" as const, start: null, end: daysAgoDate(360) }; // >360
   }
+
   function inBucket(days: number, bucket: DaysBucket) {
     if (!bucket) return true;
     if (bucket === "<70") return days < 70;
@@ -354,9 +381,10 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     return Array.from(new Set([...fromUsers, ...fromCoops, ...fromVisits])).sort((a, b) => a.localeCompare(b));
   }, [props.users, props.cooperados, props.visits]);
 
-  const produtoOptions = ['Consórcio', 'Seguro', 'Investimentos', 'Crédito', 'Previdência', 'Compliance', 'Cobrança', 'SIPAG'] as const;
+  const produtoOptions = Object.values(Product);
 
   const filteredVisits = useMemo(() => {
+    Object.values(Product);
     const s = appliedStart ? new Date(`${appliedStart}T00:00:00`) : null;
     const e = appliedEnd ? new Date(`${appliedEnd}T23:59:59`) : null;
     const q = normalizeTextStrict(appliedBusca);
@@ -399,6 +427,82 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
       return true;
     });
   }, [props.visits, appliedPA, appliedGerente, appliedProduto, appliedBusca, appliedStart, appliedEnd]);
+
+  //graficos visitas por gerente
+  const visitsByManager = useMemo(() => {
+    type Row = { id: string; name: string; agency: string; count: number };
+
+    const map = new Map<string, Row>();
+
+    for (const v of filteredVisits) {
+      const id = (v.manager?.id || "").toString().trim();
+      if (!id) continue; // ignora visitas sem gerente válido
+
+      const name = (v.manager?.name || "—").toString().trim() || "—";
+      const agency = (v.manager?.agency || "").toString().trim();
+
+      const prev = map.get(id);
+      if (!prev) {
+        map.set(id, { id, name, agency, count: 1 });
+      } else {
+        // garante que nome/agency ficam atualizados se vierem diferentes
+        map.set(id, {
+          ...prev,
+          name: name || prev.name,
+          agency: agency || prev.agency,
+          count: prev.count + 1,
+        });
+      }
+    }
+
+    const rows = Array.from(map.values()).sort((a, b) => b.count - a.count);
+    const max = rows[0]?.count || 0;
+
+    return { rows, max };
+  }, [filteredVisits]);
+
+  const visitsByPA = useMemo(() => {
+    const map = new Map<string, number>();
+
+    for (const v of filteredVisits) {
+      const pa =
+        (v.manager?.agency || (v.cooperado as any)?.agency || "—").toString().trim() || "—";
+      map.set(pa, (map.get(pa) || 0) + 1);
+    }
+
+    const rows = Array.from(map.entries())
+      .map(([pa, count]) => ({ pa, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const max = rows[0]?.count || 0;
+    return { rows, max };
+  }, [filteredVisits]);
+
+  // B) Produtos mais ofertados (barras verticais)
+  const productsStats = useMemo(() => {
+    const map = new Map<string, number>();
+
+    for (const v of filteredVisits) {
+      const prods = (v as any).products;
+      if (!Array.isArray(prods)) continue;
+
+      for (const p of prods) {
+        const name = (p?.product || "").toString().trim();
+        if (!name) continue;
+        map.set(name, (map.get(name) || 0) + 1);
+      }
+    }
+
+    const rows = Array.from(map.entries())
+      .map(([product, count]) => ({ product, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const max = rows[0]?.count || 0;
+    return { rows, max };
+  }, [filteredVisits]);
+
+
+
 
   //last visit
   const lastVisits = useMemo(() => {
@@ -506,6 +610,67 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   }, [filteredVisits]);
 
   const allProducts = Object.values(Product);
+
+  const reportKpis = useMemo(() => {
+    const totalVisits = filteredVisits.length;
+
+    // total de gerentes cadastrados (ajuste se você quiser considerar disabled)
+    const totalManagers = (props.users || []).filter(u =>
+      (u.role || "").toLowerCase().includes("gerente")
+    ).length;
+
+    // gerentes ativos no período (por id)
+    const activeManagerIds = new Set(
+      filteredVisits
+        .map(v => (v.manager?.id || "").toString().trim())
+        .filter(Boolean)
+    );
+    const activeManagers = activeManagerIds.size;
+
+    // total de produtos ofertados (soma simples: 2 produtos na visita conta 2)
+    const totalProductsOffered = filteredVisits.reduce((acc, v) => {
+      const prods = (v as any).products;
+      if (!Array.isArray(prods)) return acc;
+
+      // conta apenas itens com product preenchido
+      return acc + prods.filter((p: any) => (p?.product || "").toString().trim()).length;
+    }, 0);
+
+    // média produtos por visita
+    const avgProductsPerVisit = totalVisits > 0 ? (totalProductsOffered / totalVisits) : 0;
+
+    // média visitas por gerente ativo (visitas / gerentes que registraram)
+    const avgVisitsPerActiveManager = activeManagers > 0 ? (totalVisits / activeManagers) : 0;
+
+    return {
+      totalVisits,
+      totalManagers,
+      activeManagers,
+      totalProductsOffered,
+      avgProductsPerVisit,
+      avgVisitsPerActiveManager,
+    };
+  }, [filteredVisits, props.users]);
+
+  function validateReportDateRange(startStr: string, endStr: string): string {
+    if (!startStr) return "Informe a data inicial.";
+    if (!endStr) return "Informe a data final.";
+
+    const start = new Date(`${startStr}T00:00:00.000`);
+    const end = new Date(`${endStr}T23:59:59.999`);
+
+    if (end < start) return "A data final não pode ser menor que a data inicial.";
+    if (!isRangeWithinMaxMonths(start, end, 3)) return "O intervalo máximo permitido é de 3 meses.";
+
+    return "";
+  }
+
+  useEffect(() => {
+    setReportError(validateReportDateRange(reportStart, reportEnd));
+  }, [reportStart, reportEnd]);
+
+
+  const canApplyReportFilters = reportError === "";
 
   function downloadCSV() {
     const slug = (s: string) =>
@@ -721,7 +886,12 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
             <div className="flex flex-wrap gap-2">
               {/* ✅ novo: aplica filtros */}
               <button
+                type="button"
+                disabled={!canApplyReportFilters}
                 onClick={() => {
+                  // reforço: se inválido, não aplica
+                  if (!canApplyReportFilters) return;
+
                   setAppliedPA(reportPA);
                   setAppliedGerente(reportGerente);
                   setAppliedProduto(reportProduto);
@@ -729,29 +899,43 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                   setAppliedStart(reportStart);
                   setAppliedEnd(reportEnd);
                 }}
-                className="bg-indigo-600 hover:bg-indigo-700 text-xs px-4 py-2 rounded-lg font-bold"
-                title="Aplica os filtros para recalcular a tabela/estatísticas"
+                className={`text-xs px-4 py-2 rounded-lg font-bold transition-all
+                  ${canApplyReportFilters
+                    ? "bg-indigo-600 hover:bg-indigo-700"
+                    : "bg-gray-600 opacity-60 cursor-not-allowed"
+                  }`}
+                title={
+                  canApplyReportFilters
+                    ? "Aplica os filtros para recalcular a tabela/estatísticas"
+                    : reportError || "Preencha as datas para aplicar"
+                }
               >
                 ✅ Aplicar filtros
               </button>
 
+
+
               <button
                 onClick={() => {
+                  const ds = toInputDate(startOfCurrentMonth());
+                  const de = toInputDate(new Date());
+
                   // draft
                   setReportPA('');
                   setReportGerente('');
                   setReportProduto('');
                   setReportBusca('');
-                  setReportStart('');
-                  setReportEnd('');
+                  setReportStart(ds);
+                  setReportEnd(de);
+                  setReportError("");
 
                   // applied
                   setAppliedPA('');
                   setAppliedGerente('');
                   setAppliedProduto('');
                   setAppliedBusca('');
-                  setAppliedStart('');
-                  setAppliedEnd('');
+                  setAppliedStart(ds);
+                  setAppliedEnd(de);
 
                   // autocomplete gerente
                   setMgrSearch('');
@@ -875,20 +1059,14 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
 
             <div>
               <label className="text-xs text-gray-400 font-bold">Data inicial</label>
-              <input
-                type="date"
-                value={reportStart}
-                onChange={(e) => setReportStart(e.target.value)}
+              <input type="date" value={reportStart} onChange={(e) => setReportStart(e.target.value)}
                 className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
               />
             </div>
 
             <div>
               <label className="text-xs text-gray-400 font-bold">Data final</label>
-              <input
-                type="date"
-                value={reportEnd}
-                onChange={(e) => setReportEnd(e.target.value)}
+              <input type="date" value={reportEnd} onChange={(e) => setReportEnd(e.target.value)}
                 className="mt-2 w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
               />
             </div>
@@ -909,28 +1087,160 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
               .join(" · ") || "—"}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-              <p className="text-xs text-gray-400 font-bold">Visitas</p>
-              <p className="text-2xl font-extrabold mt-2">{reportStats.total}</p>
+              <p className="text-xs text-gray-400 font-bold">Total de visitas</p>
+              <p className="text-2xl font-extrabold mt-2">{reportKpis.totalVisits}</p>
             </div>
+
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-              <p className="text-xs text-gray-400 font-bold">Cooperados únicos</p>
-              <p className="text-2xl font-extrabold mt-2">{reportStats.uniqueCoops}</p>
-            </div>
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-              <p className="text-xs text-gray-400 font-bold">PA com mais visitas</p>
-              <p className="text-sm font-bold mt-2 text-gray-200">
-                {reportStats.topPA ? `${reportStats.topPA.name} (${reportStats.topPA.count})` : '—'}
+              <p className="text-xs text-gray-400 font-bold">Gerentes ativos</p>
+              <p className="text-2xl font-extrabold mt-2">
+                {String(reportKpis.activeManagers).padStart(2, "0")}{" "}
+                <span className="text-sm text-gray-300 font-bold">
+                  de {String(reportKpis.totalManagers).padStart(2, "0")}
+                </span>
               </p>
             </div>
+
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-              <p className="text-xs text-gray-400 font-bold">Gerente com mais visitas</p>
-              <p className="text-sm font-bold mt-2 text-gray-200">
-                {reportStats.topManager ? `${reportStats.topManager.name} (${reportStats.topManager.count})` : '—'}
-              </p>
+              <p className="text-xs text-gray-400 font-bold">Produtos ofertados</p>
+              <p className="text-2xl font-extrabold mt-2">{reportKpis.totalProductsOffered}</p>
+            </div>
+
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+              <p className="text-xs text-gray-400 font-bold">Média produtos/visita</p>
+              <p className="text-2xl font-extrabold mt-2">{reportKpis.avgProductsPerVisit.toFixed(2)}</p>
+            </div>
+
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+              <p className="text-xs text-gray-400 font-bold">Média visitas/gerente</p>
+              <p className="text-2xl font-extrabold mt-2">{reportKpis.avgVisitsPerActiveManager.toFixed(2)}</p>
             </div>
           </div>
+          {/*começa o grafico aqui */}
+          <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Card 1: Visitas por gerente (o seu atual) */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-white">Visitas por gerente</h3>
+                <span className="text-xs text-gray-400">
+                  {visitsByManager.rows.length} gerentes
+                </span>
+              </div>
+
+              {visitsByManager.rows.length === 0 ? (
+                <div className="text-sm text-gray-400">Sem dados para o período selecionado.</div>
+              ) : (
+                <div className="space-y-2">
+                  {visitsByManager.rows.slice(0, 18).map((r) => {
+                    const pct = visitsByManager.max ? (r.count / visitsByManager.max) * 100 : 0;
+
+                    return (
+                      <div key={r.id} className="flex items-center gap-3">
+                        <div className="w-40 text-xs text-gray-200 truncate" title={r.name}>
+                          <b>{r.name}</b>
+                        </div>
+
+                        <div className="flex-1 h-3 bg-gray-900 border border-gray-700 rounded overflow-hidden">
+                          <div className="h-full bg-lime-500" style={{ width: `${pct}%` }} />
+                        </div>
+
+                        <div className="w-10 text-right text-xs font-bold text-gray-100">
+                          {r.count}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Card 2: Visitas por PA (A) */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-white">Visitas por PA</h3>
+                <span className="text-xs text-gray-400">
+                  {visitsByPA.rows.length} PAs
+                </span>
+              </div>
+
+              {visitsByPA.rows.length === 0 ? (
+                <div className="text-sm text-gray-400">Sem dados para o período selecionado.</div>
+              ) : (
+                <div className="space-y-2">
+                  {visitsByPA.rows.slice(0, 12).map((r) => {
+                    const pct = visitsByPA.max ? (r.count / visitsByPA.max) * 100 : 0;
+
+                    return (
+                      <div key={r.pa} className="flex items-center gap-3">
+                        <div className="w-20 text-xs text-gray-200 truncate" title={r.pa}>
+                          <b>{r.pa}</b>
+                        </div>
+
+                        <div className="flex-1 h-3 bg-gray-900 border border-gray-700 rounded overflow-hidden">
+                          <div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                        </div>
+
+                        <div className="w-10 text-right text-xs font-bold text-gray-100">
+                          {r.count}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Card 3: Produtos mais ofertados (B) */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-white">Produtos mais ofertados</h3>
+                <span className="text-xs text-gray-400">
+                  Top {Math.min(10, productsStats.rows.length)}
+                </span>
+              </div>
+
+              {productsStats.rows.length === 0 ? (
+                <div className="text-sm text-gray-400">Sem produtos no período selecionado.</div>
+              ) : (
+                <div className="h-44 flex items-end gap-2">
+                  {productsStats.rows.slice(0, 10).map((r) => {
+                    const rawPct = productsStats.max ? (r.count / productsStats.max) * 100 : 0;
+
+                    // Se existir contagem, garante uma barrinha mínima visível
+                    const pct = r.count > 0 ? Math.max(3, rawPct) : 0;
+
+                    return (
+                      <div key={r.product} className="flex-1 min-w-0 flex flex-col items-center">
+                        {/* Barra (altura fixa) */}
+                        <div
+                          className="w-full h-28 bg-gray-900 border border-gray-700 rounded relative overflow-hidden"
+                          title={`${r.product}: ${r.count}`}
+                        >
+                          <div
+                            className="absolute bottom-0 left-0 w-full bg-yellow-400"
+                            style={{ height: `${pct}%` }}
+                          />
+                        </div>
+
+                        {/* Label */}
+                        <div className="mt-2 text-[10px] text-gray-200 truncate w-full text-center" title={r.product}>
+                          {r.product}
+                        </div>
+
+                        {/* Valor */}
+                        <div className="text-[11px] font-bold text-gray-100">{r.count}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Outros graficos aqui */}
+
 
           <div className="overflow-x-auto">
             <table className="w-full text-left">
