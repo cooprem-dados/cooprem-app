@@ -16,7 +16,6 @@ export enum Product {
   Compliance = 'Compliance',
   Cobranca = 'Cobrança Bancária ',
   SIPAG = 'SIPAG',
-  Outros = 'Outros',
 
 }
 
@@ -61,6 +60,7 @@ export interface Visit {
   summary: string;
   products: ProductDetail[];
   manager: { id: string; name: string; agency: string };
+  inAgency?: boolean;
 }
 
 export interface SuggestedVisit {

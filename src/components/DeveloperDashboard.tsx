@@ -528,6 +528,9 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     const walletQ = normalizeTextStrict(mapWalletManager);
 
     return lastVisits.filter((v: any) => {
+       // ✅ NÃO MOSTRAR atendimento na agência
+      if (v?.inAgency === true) return false;
+
       // 1) usuário (registrador)
       if (mapManagerId && (v?.manager?.id || "") !== mapManagerId) return false;
 

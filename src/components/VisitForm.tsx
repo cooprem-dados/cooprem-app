@@ -46,6 +46,7 @@ const VisitForm: React.FC<VisitFormProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [isProspeccao, setIsProspeccao] = useState(false);
   const [manualCoop, setManualCoop] = useState({ name: "", document: "" });
+  const [inAgency, setInAgency] = useState(false);
 
   //erro usuarios conserta
   const [selectedCooperado, setSelectedCooperado] = useState<Cooperado | null>(prefilledCooperado ?? null);
@@ -251,18 +252,18 @@ const VisitForm: React.FC<VisitFormProps> = ({
     } else if (prefilledCooperado?.id) {
       const raw: any = prefilledCooperado;
       const base: Cooperado = {
-      id: raw.id,
-      name: raw.name ?? raw.nome ?? "Sem nome",
-      document: raw.document ?? raw.documento ?? "",
-      isPortfolio: Boolean(raw.isPortfolio ?? false),
-      managerName: raw.managerName ?? raw.nome_gerente,
-    };
+        id: raw.id,
+        name: raw.name ?? raw.nome ?? "Sem nome",
+        document: raw.document ?? raw.documento ?? "",
+        isPortfolio: Boolean(raw.isPortfolio ?? false),
+        managerName: raw.managerName ?? raw.nome_gerente,
+      };
 
-    // ✅ não enviar agency undefined (Firestore não aceita)
-    cooperado =
-      raw.agency != null && String(raw.agency).trim() !== ""
-        ? { ...base, agency: String(raw.agency) }
-        : base;
+      // ✅ não enviar agency undefined (Firestore não aceita)
+      cooperado =
+        raw.agency != null && String(raw.agency).trim() !== ""
+          ? { ...base, agency: String(raw.agency) }
+          : base;
     } else {
       if (!selectedCooperado?.id) {
         alert("Selecione um cooperado da lista.");
@@ -286,6 +287,7 @@ const VisitForm: React.FC<VisitFormProps> = ({
         location,
         summary,
         products: selectedProducts.map((p) => ({ product: p })),
+        inAgency,
       });
 
       if (suggestionId && onRemoveSuggestion) {
@@ -446,6 +448,22 @@ const VisitForm: React.FC<VisitFormProps> = ({
               )}
             </div>
           )}
+
+          <div className="mt-3">
+            <label className="flex items-center gap-2 text-sm text-gray-700 font-semibold">
+              <input
+                type="checkbox"
+                checked={inAgency}
+                onChange={(e) => setInAgency(e.target.checked)}
+                className="w-4 h-4"
+              />
+              Atendimento na agência
+            </label>
+
+            <p className="text-xs text-gray-500 mt-1">
+              Se marcado, esta visita não aparecerá no mapa.
+            </p>
+          </div>
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">Resumo da Visita</label>
