@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Cooperado, Visit, Product } from '../types';
 import { useGeolocation } from '../hooks/useGeolocation';
+import { useFeedback } from "./ui/FeedbackProvider";
+import { User } from '../types';
+import { sipagEntrega, sipagDevolucao, sipagTroca, normalizeCNPJ, hasActiveSipagForCNPJ } from '../services/sipag';
 
 interface VisitFormProps {
+  user: User;
   /**
    * Fallback/local list (ex.: dev/admin screens). For user common, prefer remote search via searchCooperados.
    */
@@ -30,6 +34,7 @@ interface VisitFormProps {
 type AnyCooperado = any;
 
 const VisitForm: React.FC<VisitFormProps> = ({
+  user,
   cooperados,
   searchCooperados,
   currentPA,
@@ -61,7 +66,22 @@ const VisitForm: React.FC<VisitFormProps> = ({
   const [loadingCooperados, setLoadingCooperados] = useState(false);
   const lastReqIdRef = useRef(0);
 
+  const { toast } = useFeedback();
+
   useEffect(() => { getLocation(); }, [getLocation]);
+
+  //Dashboard SIPAG
+  type SipagActionUI = '' | 'ENTREGA' | 'TROCA' | 'DEVOLUCAO';
+
+  const [sipagAction, setSipagAction] = useState<SipagActionUI>('');
+  const [sipagCnpj, setSipagCnpj] = useState('');
+  const [sipagSerialEntrega, setSipagSerialEntrega] = useState('');
+  const [sipagSerialDevolucao, setSipagSerialDevolucao] = useState('');
+  const [sipagSerialTrocaSai, setSipagSerialTrocaSai] = useState('');
+  const [sipagSerialTrocaEntra, setSipagSerialTrocaEntra] = useState('');
+  const [sipagJustificativa, setSipagJustificativa] = useState('');
+  const [checkingCoopSipag, setCheckingCoopSipag] = useState(false);
+  const [coopHasSipag, setCoopHasSipag] = useState(false);
 
   // Helpers for search
   const normalizeText = (v: any) =>
@@ -131,6 +151,21 @@ const VisitForm: React.FC<VisitFormProps> = ({
     return () => clearTimeout(t);
   }, [coopSearch, runRemoteSearch, searchCooperados, prefilledCooperado, currentPA]);
 
+  useEffect(() => {
+    const hasSipagMaquina = selectedProducts.includes(Product.SIPAG_MAQUINA);
+    if (!hasSipagMaquina) {
+      setSipagAction("");
+      setSipagCnpj("");
+      setSipagSerialEntrega("");
+      setSipagSerialDevolucao("");
+      setSipagSerialTrocaSai("");
+      setSipagSerialTrocaEntra("");
+      setSipagJustificativa("");
+      setCheckingCoopSipag(false);
+      setCoopHasSipag(false);
+    }
+  }, [selectedProducts]);
+
   // Options shown in dropdown:
   // - If remote search is enabled: show remote results only (already limited to 20)
   // - Else: local filter + slice(0, 20)
@@ -160,6 +195,54 @@ const VisitForm: React.FC<VisitFormProps> = ({
       })
       .slice(0, 20);
   }, [coopSearch, cooperadosNormalized, searchCooperados, cooperadosResults]);
+
+  //sipag useeffect
+  useEffect(() => {
+    const doc = selectedCooperado?.document ?? '';
+    const digits = normalizeCNPJ(doc);
+    if (digits) setSipagCnpj(digits);
+  }, [selectedCooperado]);
+
+  useEffect(() => {
+    if (sipagAction !== "DEVOLUCAO" && sipagAction !== "TROCA") {
+      setSipagJustificativa("");
+    }
+  }, [sipagAction]);
+
+  useEffect(() => {
+    const needsCheck = selectedProducts.includes(Product.SIPAG_MAQUINA);
+    if (!needsCheck) return;
+
+    const digits = normalizeCNPJ(
+      sipagCnpj ||
+      selectedCooperado?.document ||
+      manualCoop.document ||
+      ""
+    );
+
+    if (digits.length !== 14) {
+      setCoopHasSipag(false);
+      return;
+    }
+
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        setCheckingCoopSipag(true);
+        const ok = await hasActiveSipagForCNPJ(digits);
+        if (!cancelled) setCoopHasSipag(ok);
+      } catch {
+        if (!cancelled) setCoopHasSipag(false);
+      } finally {
+        if (!cancelled) setCheckingCoopSipag(false);
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [selectedProducts, sipagCnpj, selectedCooperado, manualCoop.document]);
 
   // If prefilled cooperado, lock input and show value as "nome / documento"
   /*
@@ -235,7 +318,7 @@ const VisitForm: React.FC<VisitFormProps> = ({
     const hasManualCoop = isProspeccao && manualCoop.name.trim().length > 0;
 
     if ((!hasBaseCoop && !hasManualCoop) || !summary || selectedProducts.length === 0) {
-      return alert("Preencha todos os campos");
+      return toast.warning("Preencha todos os campos.");
     }
 
     // Resolve cooperado (sem depender de cooperadosResults no submit)
@@ -266,13 +349,13 @@ const VisitForm: React.FC<VisitFormProps> = ({
           : base;
     } else {
       if (!selectedCooperado?.id) {
-        alert("Selecione um cooperado da lista.");
+        toast.warning("Selecione um cooperado da lista.");
         return;
       }
 
       // opcional: garante consistência com o coopId
       if (coopId && selectedCooperado.id !== coopId) {
-        alert("O cooperado selecionado não confere. Selecione novamente.");
+        toast.error("O cooperado selecionado não confere. Selecione novamente.");
         return;
       }
 
@@ -281,6 +364,61 @@ const VisitForm: React.FC<VisitFormProps> = ({
 
     setSubmitting(true);
     try {
+      // 🔹 SIPAG: executar ação antes de salvar a visit
+      if (selectedProducts.includes(Product.SIPAG_MAQUINA)) {
+        if (!sipagAction) {
+          toast.warning("Selecione a ação SIPAG: Entrega, Troca ou Devolução.");
+          return;
+        }
+
+        if ((sipagAction === "DEVOLUCAO" || sipagAction === "TROCA") && !coopHasSipag) {
+          toast.warning("Cooperado sem máquina SIPAG vinculada. Não é possível devolver ou trocar.");
+          return;
+        }
+
+        if ((sipagAction === "DEVOLUCAO" || sipagAction === "TROCA") && !sipagJustificativa.trim()) {
+          toast.warning("Informe a justificativa para devolução ou troca.");
+          return;
+        }
+
+        const by = { uid: user.id, name: user.name };
+
+        if (sipagAction === "ENTREGA") {
+          const cnpj = normalizeCNPJ(
+            sipagCnpj || cooperado.document || ""
+          );
+
+          await sipagEntrega({
+            serialEntrega: sipagSerialEntrega,
+            cooperadoCNPJ: cnpj,
+            by,
+            note: "Ação SIPAG via visita",
+          });
+        }
+
+        if (sipagAction === "DEVOLUCAO") {
+          await sipagDevolucao({
+            serialDevolucao: sipagSerialDevolucao,
+            by,
+            note: sipagJustificativa.trim(),
+          });
+        }
+
+        if (sipagAction === "TROCA") {
+          const cnpj = normalizeCNPJ(
+            sipagCnpj || cooperado.document || ""
+          );
+
+          await sipagTroca({
+            serialSaiDoCooperado: sipagSerialTrocaSai,
+            serialVaiProCooperado: sipagSerialTrocaEntra,
+            cooperadoCNPJ: cnpj,
+            by,
+            note: sipagJustificativa.trim(),
+          });
+        }
+      }
+
       await addVisit({
         cooperado,
         date: new Date(),
@@ -297,15 +435,19 @@ const VisitForm: React.FC<VisitFormProps> = ({
       onClose();
     } catch (err: any) {
       console.error(err);
-      alert(err?.message || "Erro ao salvar a visita. Verifique permissões/rede.");
+      toast.error(err?.message || "Erro ao salvar a visita. Verifique permissões/rede.");
     } finally {
       setSubmitting(false);
     }
   };
 
   const toggleProduct = (p: Product) => {
+    if (!canSelectProducts) return;
     setSelectedProducts(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
   };
+  const hasBaseCoopSelected = !isProspeccao && (!!prefilledCooperado?.id || !!selectedCooperado?.id);
+  const hasManualCoopSelected = isProspeccao && manualCoop.name.trim().length > 0;
+  const canSelectProducts = hasBaseCoopSelected || hasManualCoopSelected;
   const pa = (currentPA ?? '').trim();
   const minChars = pa === '*' ? 3 : 2;
   return (
@@ -478,17 +620,136 @@ const VisitForm: React.FC<VisitFormProps> = ({
 
           <div>
             <label className="block text-sm font-bold text-gray-700 mb-2">Produtos Discutidos</label>
-            <div className="flex flex-wrap gap-2">
+            {!canSelectProducts && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                Selecione um cooperado antes de escolher os produtos. Em prospecção, informe o nome do cooperado.
+              </p>
+            )}
+            <div className={`flex flex-wrap gap-2 ${!canSelectProducts ? "opacity-50 pointer-events-none" : ""}`}>
               {Object.values(Product).map(p => (
                 <button
                   key={p}
                   type="button"
                   onClick={() => toggleProduct(p)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${selectedProducts.includes(p) ? 'bg-[#005058] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                  disabled={!canSelectProducts}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${selectedProducts.includes(p) ? 'bg-[#005058] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} ${!canSelectProducts ? 'cursor-not-allowed' : ''}`}
                 >
                   {p}
                 </button>
               ))}
+              {selectedProducts.includes(Product.SIPAG_MAQUINA) && (
+                <div className="mt-4 p-3 rounded-xl border border-gray-200 bg-gray-50">
+                  <div className="text-sm font-bold text-gray-800">SIPAG</div>
+
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button"
+                      onClick={() => setSipagAction('ENTREGA')}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold ${sipagAction === 'ENTREGA' ? 'bg-[#005058] text-white' : 'bg-white border border-gray-200 text-gray-700'}`}>
+                      Entrega
+                    </button>
+
+                    <button type="button"
+                      onClick={() => setSipagAction('TROCA')}
+                      disabled={!coopHasSipag || checkingCoopSipag}
+                      title={!coopHasSipag ? "Cooperado sem SIPAG vinculada" : (checkingCoopSipag ? "Verificando vínculo" : "")}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${sipagAction === 'TROCA' ? 'bg-[#005058] text-white' : 'bg-white border border-gray-200 text-gray-700'} ${(!coopHasSipag || checkingCoopSipag) ? 'opacity-50 cursor-not-allowed bg-gray-100 text-gray-400 border-gray-200' : 'hover:bg-gray-50'}`}>
+                      Troca
+                    </button>
+
+                    <button type="button"
+                      onClick={() => setSipagAction('DEVOLUCAO')}
+                      disabled={!coopHasSipag || checkingCoopSipag}
+                      title={!coopHasSipag ? "Cooperado sem SIPAG vinculada" : (checkingCoopSipag ? "Verificando vínculo" : "")}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${sipagAction === 'DEVOLUCAO' ? 'bg-[#005058] text-white' : 'bg-white border border-gray-200 text-gray-700'} ${(!coopHasSipag || checkingCoopSipag) ? 'opacity-50 cursor-not-allowed bg-gray-100 text-gray-400 border-gray-200' : 'hover:bg-gray-50'}`}>
+                      Devolução
+                    </button>
+                  </div>
+
+                  {(sipagAction === 'DEVOLUCAO' || sipagAction === 'TROCA') && (
+                    <div className="mt-3">
+                      {checkingCoopSipag ? (
+                        <p className="text-xs text-gray-500">Verificando vínculo da SIPAG...</p>
+                      ) : !coopHasSipag ? (
+                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                          Cooperado sem máquina SIPAG vinculada. Troca/Devolução bloqueadas.
+                        </p>
+                      ) : null}
+
+                      <label className="block text-xs font-semibold text-gray-600 mt-2">Justificativa</label>
+                      <textarea
+                        rows={2}
+                        value={sipagJustificativa}
+                        onChange={(e) => setSipagJustificativa(e.target.value)}
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
+                        placeholder="Descreva o motivo da devolução/troca"
+                      />
+                    </div>
+                  )}
+
+                  {/* CNPJ (obrigatório quando entrega/troca) */}
+                  {(sipagAction === 'ENTREGA' || sipagAction === 'TROCA') && (
+                    <div className="mt-3">
+                      <label className="block text-xs font-semibold text-gray-600">CNPJ do cooperado</label>
+                      <input
+                        value={sipagCnpj}
+                        onChange={(e) => setSipagCnpj(e.target.value)}
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
+                        placeholder="Somente números"
+                      />
+                    </div>
+                  )}
+
+                  {/* ENTREGA */}
+                  {sipagAction === 'ENTREGA' && (
+                    <div className="mt-3">
+                      <label className="block text-xs font-semibold text-gray-600">Serial (sai do estoque → cooperado)</label>
+                      <input
+                        value={sipagSerialEntrega}
+                        onChange={(e) => setSipagSerialEntrega(e.target.value)}
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
+                        placeholder="Serial da máquina"
+                      />
+                    </div>
+                  )}
+
+                  {/* DEVOLUÇÃO */}
+                  {sipagAction === 'DEVOLUCAO' && (
+                    <div className="mt-3">
+                      <label className="block text-xs font-semibold text-gray-600">Serial (sai do cooperado → estoque)</label>
+                      <input
+                        value={sipagSerialDevolucao}
+                        onChange={(e) => setSipagSerialDevolucao(e.target.value)}
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
+                        placeholder="Serial da máquina"
+                      />
+                    </div>
+                  )}
+
+                  {/* TROCA */}
+                  {sipagAction === 'TROCA' && (
+                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600">Serial que sai do cooperado → estoque</label>
+                        <input
+                          value={sipagSerialTrocaSai}
+                          onChange={(e) => setSipagSerialTrocaSai(e.target.value)}
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
+                          placeholder="Serial devolvida"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600">Serial que sai do estoque → cooperado</label>
+                        <input
+                          value={sipagSerialTrocaEntra}
+                          onChange={(e) => setSipagSerialTrocaEntra(e.target.value)}
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
+                          placeholder="Serial entregue"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

@@ -100,6 +100,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, visits, cooperados, suggest
 
       {isFormOpen && (
   <VisitForm
+        user={user}
     cooperados={cooperados}                 // ou []
     currentPA={isDev ? "*" : user.agency}
     searchCooperados={searchCooperados}

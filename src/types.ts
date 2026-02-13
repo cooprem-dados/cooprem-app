@@ -16,6 +16,8 @@ export enum Product {
   Compliance = 'Compliance',
   Cobranca = 'Cobrança Bancária ',
   SIPAG = 'SIPAG',
+  SIPAG_MAQUINA = 'Entrega de SIPAG'
+
 
 }
 

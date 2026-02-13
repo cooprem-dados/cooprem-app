@@ -9,6 +9,8 @@ import Logo from "./components/Logo";
 
 import { auth, db } from "./firebase/firebaseConfig";
 
+import { useFeedback } from "./components/ui/FeedbackProvider";
+
 import { signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "firebase/auth";
 import { Timestamp, addDoc, collection, deleteDoc, doc } from "firebase/firestore";
 
@@ -37,12 +39,11 @@ const App = () => {
 
   type ViewMode = "admin" | "manager";
 
-  const isDevAdmin =
-    currentUser?.role === "Admin" || currentUser?.role === "Desenvolvedor";
-
   const [viewMode, setViewMode] = useState<ViewMode>("admin");
 
   const [impersonateUserId, setImpersonateUserId] = useState<string>("");
+
+  const { toast, confirm } = useFeedback();
 
   // Busca cooperados via service (Firestore). Mantém a mesma assinatura usada pelos dashboards.
   const searchCooperados = useCallback(
@@ -59,14 +60,20 @@ const App = () => {
   };
 
   const onResetUserPassword = async (email: string) => {
-    if (!confirm(`Enviar e-mail de redefinição de senha para ${email}?`)) return;
+    const ok = await confirm({
+      title: "Redefinir senha",
+      message: `Enviar e-mail de redefinição de senha para ${email}?`,
+      confirmText: "Enviar",
+      cancelText: "Cancelar",
+    });
+    if (!ok) return;
 
     try {
       await sendPasswordResetEmail(auth, email);
-      alert("E-mail de redefinição enviado.");
+      toast.success("E-mail de redefinição enviado.");
     } catch (err: any) {
       console.error(err);
-      alert("Não foi possível enviar o e-mail de redefinição.");
+      toast.error("Não foi possível enviar o e-mail de redefinição.");
     }
   };
 
@@ -101,6 +108,22 @@ const App = () => {
     }
   }, [loadingAuth, currentUser, fetchData]);
 
+  useEffect(() => {
+    // Se saiu do modo gerente, zera a simulação para evitar "estado fantasma"
+    if (viewMode !== "manager") {
+      if (impersonateUserId) setImpersonateUserId("");
+      return;
+    }
+
+    // Se está em modo gerente mas a lista ainda não carregou, não mexe (vai cair em "eu mesmo")
+    if (!users.length) return;
+
+    // Se o ID escolhido não existe mais na lista, volta para "eu mesmo"
+    if (impersonateUserId && !users.some((u) => u.id === impersonateUserId)) {
+      setImpersonateUserId("");
+    }
+  }, [viewMode, impersonateUserId, users]);
+
   const handleLogin = async (email: string, pass: string) => {
     try {
       await signInWithEmailAndPassword(auth, email, pass);
@@ -117,9 +140,13 @@ const App = () => {
     setVisits((prev) => [newVisit, ...prev]);
   };
 
-  const isDev =
-    !!currentUser &&
-    (currentUser.role === "Desenvolvedor" || currentUser.role === "Admin");
+  const roleLower = (currentUser?.role || "").toLowerCase();
+
+const isDev =
+  !!currentUser && (roleLower === "desenvolvedor" || roleLower === "admin");
+
+const isSipagAdmin =
+  !!currentUser && roleLower === "sipag_admin";
 
   // usuário efetivo a ser usado no Dashboard quando estiver em modo gerente
   const impersonatedUser = useMemo(() => {
@@ -131,18 +158,18 @@ const App = () => {
   const managerViewUser = impersonatedUser ?? currentUser;
 
   const managerVisits =
-  isDev && viewMode === "manager"
-    ? visits.filter((v) => (v?.manager?.id || "") === (managerViewUser?.id || ""))
-    : visits;
+    isDev && viewMode === "manager"
+      ? visits.filter((v) => (v?.manager?.id || "") === (managerViewUser?.id || ""))
+      : visits;
 
-const managerSuggestedVisits =
-  isDev && viewMode === "manager"
-    ? suggestedVisits.filter((s) => (s?.manager?.id || "") === (managerViewUser?.id || ""))
-    : suggestedVisits;
+  const managerSuggestedVisits =
+    isDev && viewMode === "manager"
+      ? suggestedVisits.filter((s) => (s?.manager?.id || "") === (managerViewUser?.id || ""))
+      : suggestedVisits;
 
 
   const handleGenerateAISuggestions = async () => {
-    alert("IA desativada por enquanto.");
+    toast.info("IA desativada por enquanto.");
   };
 
   if (loading) {
@@ -196,9 +223,11 @@ const managerSuggestedVisits =
           )}
         </div>
       )}
-      {isDev ? (
-        viewMode === "admin" ? (
+      {(isDev || isSipagAdmin) ? (
+  // sipag_admin ignora viewMode e vai direto pro painel
+  (isSipagAdmin || viewMode === "admin") ? (
           <DeveloperDashboard
+            currentUser={currentUser}
             users={users}
             cooperados={cooperados}
             visits={visits}
@@ -213,26 +242,34 @@ const managerSuggestedVisits =
                 setUsers((p) => [...p, created]);
               } catch (err: any) {
                 if (err?.code === "auth/email-already-in-use") {
-                  alert("Já existe um usuário cadastrado com este e-mail.");
+                  toast.warning("Já existe um usuário cadastrado com este e-mail.");
                   return;
                 }
-                alert("Erro ao criar usuário.");
+                toast.error("Erro ao criar usuário.");
                 console.error(err);
               }
             }}
             onDeleteUser={async (id) => {
-              if (!confirm("Desativar este usuário? Ele não conseguirá acessar o sistema.")) return;
+              const ok = await confirm({
+                title: "Desativar usuário",
+                message: "Desativar este usuário? Ele não conseguirá acessar o sistema.",
+                confirmText: "Desativar",
+              });
+              if (!ok) return;
 
               await disableUser(id);
-
-              setUsers((p) => p.map((u) => (u.id === id ? { ...u, disabled: true } : u)));
+              toast.success("Usuário desativado.");
             }}
             onEnableUser={async (id) => {
-              if (!confirm("Reativar este usuário?")) return;
+              const ok = await confirm({
+                title: "Reativar usuário",
+                message: "Reativar este usuário?",
+                confirmText: "Reativar",
+              });
+              if (!ok) return;
 
               await enableUser(id);
-
-              setUsers((p) => p.map((u) => (u.id === id ? { ...u, disabled: false } : u)));
+              toast.success("Usuário reativado.");
             }}
             onAddCooperado={async (c) => {
               const created = await addCooperado(c);
@@ -264,7 +301,15 @@ const managerSuggestedVisits =
               setCooperados((p) => p.map((x) => (x.id === id ? updated : x)));
             }}
             onDeleteCooperado={async (id) => {
-              if (!confirm("Excluir cooperado?")) return;
+              const ok = await confirm({
+                title: "Excluir cooperado",
+                message: "Excluir cooperado?",
+                confirmText: "Excluir",
+              });
+              if (!ok) return;
+
+              await deleteCooperado(id);
+              toast.success("Cooperado excluído.");
               await deleteCooperado(id);
               setCooperados((p) => p.filter((x) => x.id !== id));
             }}

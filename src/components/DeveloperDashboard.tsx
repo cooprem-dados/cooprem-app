@@ -1,5 +1,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Html5Qrcode } from "html5-qrcode";
 import { User, Cooperado, Visit, SuggestedVisit } from '../types';
 import Logo from './Logo';
 import VisitsMap from './VisitsMap';
@@ -23,9 +24,24 @@ import {
   isRangeWithinMaxMonths
 } from "../utils/dates";
 
+import {
+  addSipagMachine,
+  listSipagMachines,
+  transferSipagMachine,
+  SipagMachine,
+  deactivateSipagMachine,
+  countSipagEstoqueByPA,
+  countSipagAtivasComCNPJByPA,
+} from "../services/sipag";
+
+import { useFeedback } from "./ui/FeedbackProvider";
+
+import * as XLSX from "xlsx";
+
 import { db } from "../firebase/firebaseConfig";
 
 interface DeveloperDashboardProps {
+  currentUser: User;
   users: User[];
   cooperados: Cooperado[];
   visits: Visit[];
@@ -56,7 +72,12 @@ interface DeveloperDashboardProps {
 const normalizeDoc = (v: any) => String(v ?? '').replace(/\D/g, '');
 
 const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
-  const [tab, setTab] = useState<'map' | 'users' | 'cooperados' | 'reports' | 'suggestions'>('map');
+  const roleLower = (props.currentUser?.role || "").toLowerCase();
+  const isSipagAdmin = roleLower === "sipag_admin";
+
+  const [tab, setTab] = useState<'map' | 'users' | 'cooperados' | 'reports' | 'suggestions' | 'SIPAG'>(
+    isSipagAdmin ? "SIPAG" : "map"
+  );
   const [modalUser, setModalUser] = useState<User | null>(null);
   const [isUserModal, setIsUserModal] = useState(false);
   const [modalCoop, setModalCoop] = useState<Cooperado | null>(null);
@@ -77,6 +98,40 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   //estados do filtro do mpa
   type DaysBucket = "" | "<70" | "70-90" | "90-180" | "180-360" | ">360";
 
+  //confirm
+  const { toast, confirm: confirmAction } = useFeedback();
+
+  //sipag
+  const [sipagList, setSipagList] = useState<SipagMachine[]>([]);
+  const [sipagFilterPA, setSipagFilterPA] = useState<string>("99");
+
+  const [newSipagSerial, setNewSipagSerial] = useState("");
+  const [newSipagNotes, setNewSipagNotes] = useState("");
+  const sipagSerialInputRef = useRef<HTMLInputElement | null>(null);
+  const [sipagScannerOpen, setSipagScannerOpen] = useState(false);
+  const [sipagScannerError, setSipagScannerError] = useState<string>("");
+  const [sipagReaderOpen, setSipagReaderOpen] = useState(false);
+  const [sipagReaderBuffer, setSipagReaderBuffer] = useState("");
+  const [sipagReaderError, setSipagReaderError] = useState<string>("");
+  const sipagReaderInputRef = useRef<HTMLInputElement | null>(null);
+  const [sipagAutoAdding, setSipagAutoAdding] = useState(false);
+  const sipagScannerRef = useRef<Html5Qrcode | null>(null);
+  const sipagLastScanRef = useRef<{ text: string; at: number } | null>(null);
+
+  const [transferSerial, setTransferSerial] = useState("");
+  const [transferToPA, setTransferToPA] = useState("99");
+  const [transferReason, setTransferReason] = useState("");
+
+  const [inactiveSerial, setInactiveSerial] = useState("");
+  const [inactiveReason, setInactiveReason] = useState<"MANUTENCAO" | "DESCARTE" | "OUTRO">("MANUTENCAO");
+  const [inactiveNote, setInactiveNote] = useState("");
+
+  const sipagAtivas = useMemo(() => sipagList.filter((m: any) => m.isActive !== false), [sipagList]);
+  const sipagInativas = useMemo(() => sipagList.filter((m: any) => m.isActive === false), [sipagList]);
+
+  const [sipagCounts, setSipagCounts] = useState<Record<string, { estoque: number; comCooperado: number }>>({});
+  const [sipagCountsLoading, setSipagCountsLoading] = useState(false);
+
 
   const [mapManagerId, setMapManagerId] = useState<string>(""); // sem filtro
   const [mapWalletManager, setMapWalletManager] = useState<string>("");
@@ -85,6 +140,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   const [mapDays, setMapDays] = useState<DaysBucket>("<70"); // default econômico
   const [mapVisits, setMapVisits] = useState<Visit[]>([]);
   const [mapLoading, setMapLoading] = useState(false);
+  const [mapVisible, setMapVisible] = useState(false);
 
   useEffect(() => {
     // sempre que entrar na aba ou a lista mudar, volta para a primeira página
@@ -144,6 +200,115 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     };
   }, [tab, mapDays]);
 
+  useEffect(() => {
+    if (tab !== "map") setMapVisible(false);
+  }, [tab]);
+
+  useEffect(() => {
+    if (sipagReaderOpen) {
+      setSipagReaderError("");
+      setTimeout(() => sipagReaderInputRef.current?.focus(), 0);
+    } else {
+      setSipagReaderBuffer("");
+    }
+  }, [sipagReaderOpen]);
+
+  const handleSipagRegister = async (serialRaw: string, opts?: { setInput?: boolean }) => {
+    const serial = (serialRaw || "").trim().toUpperCase();
+    if (!serial || sipagAutoAdding) return;
+
+    const now = Date.now();
+    const last = sipagLastScanRef.current;
+    if (last && last.text === serial && now - last.at < 1500) {
+      toast.warning("Serial repetido.");
+      return;
+    }
+    sipagLastScanRef.current = { text: serial, at: now };
+
+    setSipagAutoAdding(true);
+    try {
+      await addSipagMachine(
+        serial,
+        { uid: props.currentUser.id, name: props.currentUser.name },
+        { notes: newSipagNotes }
+      );
+      if (opts?.setInput !== false) {
+        setNewSipagSerial(serial);
+      }
+      toast.success(`SIPAG ${serial} adicionada ao estoque (PA 99).`);
+      refreshSipag();
+    } catch (e: any) {
+      console.error(e);
+      toast.error(e?.message || "Erro ao adicionar SIPAG.");
+    } finally {
+      setSipagAutoAdding(false);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const stopScanner = async () => {
+      if (sipagScannerRef.current) {
+        try {
+          await sipagScannerRef.current.stop();
+        } catch {
+          // ignore
+        }
+        try {
+          await sipagScannerRef.current.clear();
+        } catch {
+          // ignore
+        }
+        sipagScannerRef.current = null;
+      }
+    };
+
+    const startScanner = async () => {
+      setSipagScannerError("");
+      const id = "sipag-scanner";
+      if (!sipagScannerRef.current) {
+        sipagScannerRef.current = new Html5Qrcode(id);
+      }
+
+      try {
+        await sipagScannerRef.current.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 240, height: 240 } },
+          (decodedText) => {
+            const now = Date.now();
+            const last = sipagLastScanRef.current;
+            if (last && last.text === decodedText && now - last.at < 1500) return;
+            sipagLastScanRef.current = { text: decodedText, at: now };
+
+            const next = (decodedText || "").trim().toUpperCase();
+            if (next) {
+              handleSipagRegister(next);
+            }
+          },
+          () => {
+            // ignore scan errors
+          }
+        );
+      } catch (e: any) {
+        if (!cancelled) {
+          setSipagScannerError(e?.message || "Erro ao acessar a câmera.");
+        }
+      }
+    };
+
+    if (sipagScannerOpen) {
+      startScanner();
+    } else {
+      stopScanner();
+    }
+
+    return () => {
+      cancelled = true;
+      stopScanner();
+    };
+  }, [sipagScannerOpen, toast]);
+
   const usersTotalPages = useMemo(() => {
     const total = (props.users || []).length;
     return Math.max(1, Math.ceil(total / USERS_PER_PAGE));
@@ -153,6 +318,10 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     const start = (usersPage - 1) * USERS_PER_PAGE;
     return (props.users || []).slice(start, start + USERS_PER_PAGE);
   }, [props.users, usersPage]);
+
+  useEffect(() => {
+    if (isSipagAdmin && tab !== "SIPAG") setTab("SIPAG");
+  }, [isSipagAdmin, tab]);
 
 
 
@@ -262,6 +431,106 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   const visibleCooperados = useMemo(() => {
     return (coopResults || []).slice(0, 20);
   }, [coopResults]);
+
+  async function refreshSipag() {
+    try {
+      const data = await listSipagMachines({ pa: sipagFilterPA });
+      setSipagList(data);
+    } catch (e: any) {
+      console.error(e);
+      toast.error(e?.message || "Erro ao carregar SIPAG.");
+    }
+  }
+
+  async function refreshSipagCounts() {
+    setSipagCountsLoading(true);
+    try {
+      const pairs = await Promise.all(
+        sipagPAOptions.map(async (pa) => {
+          const [estoque, ativas] = await Promise.all([
+            countSipagEstoqueByPA(pa),
+            countSipagAtivasComCNPJByPA(pa),
+          ]);
+          return [pa, { estoque, comCooperado: ativas }] as const;
+        })
+      );
+
+      const next: Record<string, { estoque: number; comCooperado: number }> = {};
+      for (const [pa, data] of pairs) {
+        next[pa] = data;
+      }
+
+      setSipagCounts(next);
+    } catch (e: any) {
+      console.error(e);
+      toast.error("Erro ao carregar contadores.");
+    } finally {
+      setSipagCountsLoading(false);
+    }
+  }
+  useEffect(() => {
+    if (tab !== "SIPAG") return;
+    refreshSipagCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  function exportSipagToExcel(filename: string, machines: SipagMachine[]) {
+    const rows = machines.map((m: any) => ({
+      Serial: m.serial ?? "",
+      "PA Atual": m.currentPA ?? "",
+      "Status Logístico": m.status ?? "",
+      "Status Operacional": m.operationalStatus ?? "",
+      CNPJ: m.cooperadoCNPJ ?? "",
+      Ativa: m.isActive === false ? "NÃO" : "SIM",
+      "Motivo Inativa": m.inactiveReason ?? "",
+      "Atualizado em": m.updatedAt?.toDate ? m.updatedAt.toDate().toLocaleString() : "",
+      "Última Mov.": m.lastMove
+        ? `${m.lastMove.fromPA || "—"} -> ${m.lastMove.toPA || "—"} (${m.lastMove.byName || ""})`
+        : "—",
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "SIPAG");
+    XLSX.writeFile(wb, filename);
+  }
+
+  function isSipagEstoque(m: any) {
+    return m?.isActive !== false && (m?.cooperadoCNPJ == null || m?.cooperadoCNPJ === "");
+  }
+
+  function isSipagAtivaComCNPJ(m: any) {
+    return m?.isActive !== false && m?.operationalStatus === "COM_COOPERADO";
+  }
+
+  function mapSipagRows(machines: SipagMachine[]) {
+    return machines.map((m: any) => ({
+      Serial: m.serial ?? "",
+      "PA Atual": m.currentPA ?? "",
+      "Status Logístico": m.status ?? "",
+      "Status Operacional": m.operationalStatus ?? "",
+      CNPJ: m.cooperadoCNPJ ?? "",
+      Ativa: m.isActive === false ? "NÃO" : "SIM",
+      "Motivo Inativa": m.inactiveReason ?? "",
+      "Atualizado em": m.updatedAt?.toDate ? m.updatedAt.toDate().toLocaleString() : "",
+      "Última Mov.": m.lastMove
+        ? `${m.lastMove.fromPA || "—"} -> ${m.lastMove.toPA || "—"} (${m.lastMove.byName || ""})`
+        : "—",
+    }));
+  }
+
+  function exportSipagToExcelTwoSheets(filename: string, ativas: SipagMachine[], inativas: SipagMachine[]) {
+    const wb = XLSX.utils.book_new();
+
+    const wsAtivas = XLSX.utils.json_to_sheet(mapSipagRows(ativas));
+    XLSX.utils.book_append_sheet(wb, wsAtivas, "Ativas");
+
+    const wsInativas = XLSX.utils.json_to_sheet(mapSipagRows(inativas));
+    XLSX.utils.book_append_sheet(wb, wsInativas, "Inativas");
+
+    XLSX.writeFile(wb, filename);
+  }
+
 
 
   useEffect(() => {
@@ -375,11 +644,14 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   }
 
   const paOptions = useMemo(() => {
+    if (isSipagAdmin) return ["0", "1", "2", "4", "5", "99"];
     const fromUsers = props.users.map(u => (u.agency || '').trim()).filter(Boolean);
     const fromCoops = props.cooperados.map(c => ((c as any).agency || '').toString().trim()).filter(Boolean);
     const fromVisits = props.visits.map(v => (v.manager?.agency || '').toString().trim()).filter(Boolean);
     return Array.from(new Set([...fromUsers, ...fromCoops, ...fromVisits])).sort((a, b) => a.localeCompare(b));
   }, [props.users, props.cooperados, props.visits]);
+
+  const sipagPAOptions = ["0", "1", "2", "4", "5", "99"] as const;
 
   const produtoOptions = Object.values(Product);
 
@@ -528,7 +800,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     const walletQ = normalizeTextStrict(mapWalletManager);
 
     return lastVisits.filter((v: any) => {
-       // ✅ NÃO MOSTRAR atendimento na agência
+      // ✅ NÃO MOSTRAR atendimento na agência
       if (v?.inAgency === true) return false;
 
       // 1) usuário (registrador)
@@ -684,7 +956,8 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
         .replace(/[^\w]/g, '')
         .toLowerCase();
 
-    const header = [
+    // Exporta em Excel (XLSX)
+    const headerXlsx = [
       'serial_visita',
       'data',
       'hora',
@@ -696,11 +969,9 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
       'prospeccao',
       'na_agencia',
       ...allProducts.map(p => `produto_${slug(p)}`)
-    ].join(';');
+    ];
 
-    const safe = (s: string) => `"${(s || '').replace(/"/g, '""')}"`;
-
-    const lines = filteredVisits.map(v => {
+    const rowsXlsx = filteredVisits.map(v => {
       const pa = (v.manager?.agency || ((v.cooperado as any)?.agency) || '').toString().trim();
       const gerente = (v.manager?.name || '').toString().trim();
       const nome = (((v.cooperado as any)?.name) || ((v.cooperado as any)?.nome) || '').toString().trim();
@@ -712,47 +983,33 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
       const data = d.toLocaleDateString('pt-BR');
       const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-      // 🔹 FLAG PROSPECÇÃO
       const isProspeccao = (v.cooperado as any)?.id === 'prospeccao';
       const prospeccaoFlag = isProspeccao ? 'SIM' : '';
-
-      // FLAG AGÊNCIA
       const naAgenciaFlag = (v as any).inAgency === true ? 'SIM' : '';
 
-      // 🔹 PRODUTOS
       const produtosDaVisita = new Set((v.products || []).map(p => p.product));
-      const produtoCols = allProducts.map(p =>
-        produtosDaVisita.has(p) ? 'SIM' : ''
-      );
+      const produtoCols = allProducts.map(p => (produtosDaVisita.has(p) ? 'SIM' : ''));
 
       return [
-        safe(serial),
+        serial,
         data,
         hora,
-        safe(pa),
-        safe(gerente),
-        safe(nome),
-        safe(doc),
-        safe(resumo),
-        safe(prospeccaoFlag),
-        safe(naAgenciaFlag), // flag agencia
-        ...produtoCols.map(x => safe(x))
-      ].join(';');
+        pa,
+        gerente,
+        nome,
+        doc,
+        resumo,
+        prospeccaoFlag,
+        naAgenciaFlag,
+        ...produtoCols
+      ];
     });
 
-    const csv = [header, ...lines].join('\r\n');
-    const csvWithBOM = '\uFEFF' + csv;
-
-    const blob = new Blob([csvWithBOM], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `relatorio_visitas_${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([headerXlsx, ...rowsXlsx]);
+    XLSX.utils.book_append_sheet(wb, ws, "Relatorio");
+    XLSX.writeFile(wb, `relatorio_visitas_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    return;
   }
 
 
@@ -874,11 +1131,16 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
       </header>
 
       <nav className="flex bg-[#1f2937] border-b border-gray-700 sticky top-16 z-40">
-        <button onClick={() => setTab('map')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'map' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>🗺️ Mapa Global</button>
-        <button onClick={() => setTab('reports')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'reports' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>📄 Relatórios</button>
-        <button onClick={() => setTab('users')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'users' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>👥 Gestão de Acessos</button>
-        <button onClick={() => setTab('cooperados')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'cooperados' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>🏢 Base de Dados</button>
-        <button onClick={() => setTab('suggestions')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'suggestions' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>💡 Sugestões </button>
+        {!isSipagAdmin && (
+          <>
+            <button onClick={() => setTab('map')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'map' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>🗺️ Mapa Global</button>
+            <button onClick={() => setTab('reports')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'reports' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>📄 Relatórios</button>
+            <button onClick={() => setTab('users')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'users' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>👥 Gestão de Acessos</button>
+            <button onClick={() => setTab('cooperados')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'cooperados' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>🏢 Base de Dados</button>
+            <button onClick={() => setTab('suggestions')} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === 'suggestions' ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`}>💡 Sugestões </button>
+          </>
+        )}
+        <button onClick={() => setTab("SIPAG")} className={`px-6 py-4 text-sm font-bold border-b-2 transition-colors ${tab === "SIPAG" ? 'border-blue-500 text-blue-500' : 'border-transparent text-gray-400 hover:text-white'}`} > 💳 SIPAG </button>
       </nav>
 
       {tab === 'reports' && (
@@ -961,7 +1223,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                 title="Gera um CSV (compatível com Excel) com o resultado filtrado"
                 disabled={filteredVisits.length === 0}
               >
-                ⬇️ Baixar CSV
+                ⬇️ Baixar Excel
               </button>
 
               <button
@@ -1476,7 +1738,30 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
 
             {/* MAPA (corpo) */}
             <div className="flex-1">
-              <VisitsMap visits={filteredMapVisits} />
+              {!mapVisible ? (
+                <div className="h-full flex items-center justify-center p-6">
+                  <div className="bg-gray-900/60 border border-gray-700 rounded-2xl p-8 max-w-md text-center">
+                    <div className="text-sm text-gray-400 uppercase tracking-widest">
+                      Mapa Oculto
+                    </div>
+                    <div className="text-lg font-semibold text-white mt-2">
+                      Carregue o mapa sob demanda
+                    </div>
+                    <div className="text-sm text-gray-400 mt-2">
+                      Clique no botão abaixo para exibir as visitas no mapa.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMapVisible(true)}
+                      className="mt-4 px-5 py-2 rounded-xl bg-gray-800 text-gray-100 hover:bg-gray-700 border border-gray-700 text-sm font-semibold"
+                    >
+                      Abrir mapa
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <VisitsMap visits={filteredMapVisits} />
+              )}
             </div>
           </div>
         )}
@@ -1817,10 +2102,474 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
           </div>
         )}
 
+        {tab === "SIPAG" && (
+          <div className="space-y-6">
+
+            {/* Filtro por PA */}
+            <div className="flex items-end gap-3 flex-wrap border border-gray-800 rounded-2xl p-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+              <div>
+                <label className="text-xs text-gray-400">PA (99 = Estoque)</label>
+                <select
+                  value={sipagFilterPA}
+                  onChange={(e) => setSipagFilterPA(e.target.value)}
+                  className="bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                >
+                  {paOptions.map((pa) => (
+                    <option key={pa} value={pa}>
+                      {pa === "99" ? "PA 99 (Estoque)" : `PA ${pa}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                onClick={refreshSipag}
+                className="px-4 py-2 rounded-xl bg-gray-900 text-white border border-gray-700 hover:bg-black"
+              >
+                Atualizar
+              </button>
+            </div>
+
+            {/* Entrada no estoque */}
+            <div className="border border-gray-800 rounded-2xl p-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+              <h3 className="font-semibold text-gray-100">Entrada no Estoque (PA 99)</h3>
+
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-gray-400">Serial</label>
+                  <input
+                    ref={sipagSerialInputRef}
+                    value={newSipagSerial}
+                    onChange={(e) => setNewSipagSerial(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                    placeholder="Ex: ABC123..."
+                  />
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSipagScannerOpen(true)}
+                      className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                    >
+                      Ler com câmera
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSipagReaderOpen(true)}
+                      className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                    >
+                      Ler com leitor
+                    </button>
+                    <span className="text-[11px] text-gray-500">
+                      Leitor USB/Bluetooth: escaneie direto no campo.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="text-xs text-gray-400">Observação (opcional)</label>
+                  <input
+                    value={newSipagNotes}
+                    onChange={(e) => setNewSipagNotes(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                    placeholder="Ex: lote, fornecedor, etc."
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <button
+                  onClick={async () => {
+                    try {
+                      await handleSipagRegister(newSipagSerial);
+                      setNewSipagNotes("");
+                    } catch (e: any) {
+                      console.error(e);
+                      toast.error(e?.message || "Erro ao adicionar SIPAG.");
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white text-black hover:bg-gray-200"
+                >
+                  Adicionar
+                </button>
+              </div>
+            </div>
+
+            {/* Transferência */}
+            <div className="border border-gray-800 rounded-2xl p-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+              <h3 className="font-semibold text-gray-100">Transferir SIPAG</h3>
+
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-gray-400">Serial</label>
+                  <input
+                    value={transferSerial}
+                    onChange={(e) => setTransferSerial(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                    placeholder="Serial da máquina"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-gray-400">Para PA (99 = estoque)</label>
+                  <select
+                    value={transferToPA}
+                    onChange={(e) => setTransferToPA(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                  >
+                    {paOptions.map((pa) => (
+                      <option key={pa} value={pa}>
+                        {pa === "99" ? "99 (Estoque)" : `PA ${pa}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-gray-400">Motivo (opcional)</label>
+                  <input
+                    value={transferReason}
+                    onChange={(e) => setTransferReason(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                    placeholder="Ex: instalação / devolução / troca"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <button
+                  onClick={async () => {
+                    const ok = await confirmAction({
+                      title: "Confirmar transferência",
+                      message: `Transferir ${transferSerial.trim().toUpperCase()} para o PA ${transferToPA}?`,
+                      confirmText: "Transferir",
+                      cancelText: "Cancelar",
+                    });
+                    if (!ok) return;
+
+                    try {
+                      await transferSipagMachine({
+                        serialRaw: transferSerial,
+                        toPA: transferToPA,
+                        reason: transferReason,
+                        by: { uid: props.currentUser.id, name: props.currentUser.name },
+                      });
+
+                      toast.success("Transferência registrada.");
+                      setTransferReason("");
+                      refreshSipag();
+                    } catch (e: any) {
+                      console.error(e);
+                      toast.error(e?.message || "Erro ao transferir SIPAG.");
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-gray-900 text-white border border-gray-700 hover:bg-black"
+                >
+                  Transferir
+                </button>
+              </div>
+            </div>
+
+            {/*Inativar SIPAG*/}
+            <div className="border border-gray-800 rounded-2xl p-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+              <h3 className="font-semibold text-gray-100">Inativar SIPAG (Manutenção/Remoção)</h3>
+              <p className="text-sm text-gray-400 mt-1">
+                Isso não apaga a máquina. Ela fica marcada como inativa e sai do fluxo normal.
+              </p>
+
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs text-gray-400">Serial</label>
+                  <input
+                    value={inactiveSerial}
+                    onChange={(e) => setInactiveSerial(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                    placeholder="Serial da máquina"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-gray-400">Motivo</label>
+                  <select
+                    value={inactiveReason}
+                    onChange={(e) => setInactiveReason(e.target.value as any)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                  >
+                    <option value="MANUTENCAO">Manutenção</option>
+                    <option value="DESCARTE">Descarte</option>
+                    <option value="OUTRO">Outro</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-gray-400">Observação (opcional)</label>
+                  <input
+                    value={inactiveNote}
+                    onChange={(e) => setInactiveNote(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
+                    placeholder="Ex: defeito, chamado, motivo..."
+                  />
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <button
+                  onClick={async () => {
+                    const ok = await confirmAction({
+                      title: "Confirmar inativação",
+                      message: `Inativar a SIPAG ${inactiveSerial.trim().toUpperCase()}?`,
+                      confirmText: "Inativar",
+                      cancelText: "Cancelar",
+                    });
+                    if (!ok) return;
+
+                    try {
+                      await deactivateSipagMachine({
+                        serialRaw: inactiveSerial,
+                        reason: inactiveReason,
+                        note: inactiveNote,
+                        by: { uid: props.currentUser.id, name: props.currentUser.name },
+                      });
+                      toast.success("SIPAG inativada.");
+                      setInactiveSerial("");
+                      setInactiveNote("");
+                      refreshSipag();
+                    } catch (e: any) {
+                      console.error(e);
+                      toast.error(e?.message || "Erro ao inativar SIPAG.");
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-red-600 text-white hover:bg-red-700"
+                >
+                  Inativar
+                </button>
+              </div>
+            </div>
+
+            {/*Botão de Refresh SIAPG*/}
+            <div className="border border-gray-800 rounded-2xl p-4 mb-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="text-gray-200 font-semibold">Resumo por PA</div>
+
+                <button
+                  type="button"
+                  onClick={refreshSipagCounts}
+                  className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-sm"
+                >
+                  Atualizar
+                </button>
+              </div>
+
+              {sipagCountsLoading ? (
+                <div className="mt-3 text-sm text-gray-500">Carregando contadores...</div>
+              ) : (
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {sipagPAOptions.map((pa) => (
+                    <div key={pa} className="border border-gray-800 rounded-2xl p-4 bg-black/20">
+                      <div className="text-gray-200 font-semibold">
+                        {pa === "99" ? "PA 99 (Estoque)" : `PA ${pa}`}
+                      </div>
+
+                      <div className="mt-2 text-sm text-gray-400">
+                        Estoque:{" "}
+                        <span className="text-gray-200 font-semibold">
+                          {sipagCounts[pa]?.estoque ?? 0}
+                        </span>
+                      </div>
+
+                      <div className="text-sm text-gray-400">
+                        Ativas (com CNPJ):{" "}
+                        <span className="text-gray-200 font-semibold">
+                          {sipagCounts[pa]?.comCooperado ?? 0}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 flex gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const machines = await listSipagMachines({ pa });
+                              const estoque = machines.filter(isSipagEstoque);
+                              exportSipagToExcel(`sipag_estoque_PA${pa}.xlsx`, estoque);
+                              toast.success(`Excel de estoque do PA ${pa} gerado.`);
+                            } catch (e: any) {
+                              console.error(e);
+                              toast.error(e?.message || `Erro ao baixar estoque do PA ${pa}.`);
+                            }
+                          }}
+                          className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                        >
+                          Baixar Excel (Estoque)
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const machines = await listSipagMachines({ pa });
+                              const ativas = machines.filter(isSipagAtivaComCNPJ);
+                              exportSipagToExcel(`sipag_ativas_PA${pa}.xlsx`, ativas);
+                              toast.success(`Excel de ativas do PA ${pa} gerado.`);
+                            } catch (e: any) {
+                              console.error(e);
+                              toast.error(e?.message || `Erro ao baixar ativas do PA ${pa}.`);
+                            }
+                          }}
+                          className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                        >
+                          Baixar Excel (Ativas)
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Lista */}
+            <div className="border border-gray-800 rounded-2xl p-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <div>
+                  <div className="text-xs uppercase tracking-widest text-gray-400">
+                    Exportação SIPAG
+                  </div>
+                  <div className="text-lg font-semibold text-white">
+                    Planilha Completa (Ativas + Inativas)
+                  </div>
+                  <div className="text-sm text-gray-400 mt-1 max-w-xl">
+                    Gera um arquivo com duas abas: Ativas e Inativas. Inclui todos os PAs.
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const allMachines = await listSipagMachines(); // ✅ todos os PAs
+
+                      const ativas = allMachines.filter((m: any) => m.isActive !== false);
+                      const inativas = allMachines.filter((m: any) => m.isActive === false);
+
+                      exportSipagToExcelTwoSheets("sipag_todos_PAs.xlsx", ativas, inativas);
+                      toast.success("Excel gerado.");
+                    } catch (e: any) {
+                      console.error(e);
+                      toast.error(e?.message || "Erro ao baixar todos os PAs.");
+                    }
+                  }}
+                  className="px-5 py-3 rounded-2xl bg-gray-800 text-gray-100 hover:bg-gray-700 border border-gray-700 text-sm font-semibold"
+                >
+                  Baixar Excel (Todos os PAs)
+                </button>
+              </div>
+            </div>
+            {/* */}
+          </div>
+        )}
+
+
       </main>
 
       {isUserModal && <UserFormModal user={modalUser} onSave={(u) => { modalUser ? props.onUpdateUser(modalUser.id, u) : props.onAddUser(u); setIsUserModal(false); }} onClose={() => setIsUserModal(false)} />}
       {isCoopModal && <CooperadoFormModal cooperado={modalCoop ? normalizeCooperado(modalCoop) : null} managers={props.users} onSave={(c) => { modalCoop ? props.onUpdateCooperado(modalCoop.id, c) : props.onAddCooperado(c); setIsCoopModal(false); }} onClose={() => setIsCoopModal(false)} />}
+
+      {sipagScannerOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-gray-400">Leitor de código</div>
+                <div className="text-lg font-semibold text-white">SIPAG - Serial</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSipagScannerOpen(false)}
+                className="text-gray-400 hover:text-white text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <div id="sipag-scanner" className="w-full rounded-xl overflow-hidden bg-black/40 border border-gray-800 min-h-[240px]" />
+              {sipagScannerError && (
+                <div className="mt-3 text-sm text-red-400">
+                  {sipagScannerError}
+                </div>
+              )}
+              <div className="mt-3 text-xs text-gray-400">
+                A leitura é contínua. O serial será preenchido no campo automaticamente.
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSipagScannerOpen(false)}
+                className="px-4 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700 text-sm"
+              >
+                Sair
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sipagReaderOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-lg p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-gray-400">Leitor de código</div>
+                <div className="text-lg font-semibold text-white">SIPAG - Serial (Leitor)</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSipagReaderOpen(false)}
+                className="text-gray-400 hover:text-white text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <label className="text-xs text-gray-400">Aponte o leitor para o código</label>
+              <input
+                ref={sipagReaderInputRef}
+                value={sipagReaderBuffer}
+                onChange={(e) => setSipagReaderBuffer(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleSipagRegister(sipagReaderBuffer, { setInput: false });
+                          setSipagReaderBuffer("");
+                        }
+                      }}
+                className="mt-2 w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200"
+                placeholder="Aguardando leitura..."
+              />
+              {sipagReaderError && (
+                <div className="mt-3 text-sm text-red-400">
+                  {sipagReaderError}
+                </div>
+              )}
+              <div className="mt-3 text-xs text-gray-400">
+                A leitura é contínua. A cada leitura com Enter, o serial é registrado no PA 99.
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSipagReaderOpen(false)}
+                className="px-4 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700 text-sm"
+              >
+                Sair
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

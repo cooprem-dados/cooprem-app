@@ -18,7 +18,7 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, onSave, onClose }) 
     agency: ''
   });
 
-  const paOptions = Array.from({ length: 6 }, (_, i) => String(i));
+  const paOptions = ["0", "1", "2", "4", "5", "99"];
 
   useEffect(() => {
     if (user) {
@@ -62,6 +62,7 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, onSave, onClose }) 
               <select name="role" value={formData.role} onChange={handleChange as any} style={inputStyle}>
                 <option value="Gerente">Gerente</option>
                 <option value="Desenvolvedor">Desenvolvedor</option>
+                <option value="sipag_admin">SIPAG Admin</option>
               </select>
             </div>
             <div>
