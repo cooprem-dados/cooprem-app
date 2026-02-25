@@ -145,6 +145,21 @@ export async function hasActiveSipagForCNPJ(cnpj: string) {
   return !snap.empty;
 }
 
+export async function listSipagSerialsByCNPJ(cnpj: string) {
+  const digits = normalizeCNPJ(cnpj);
+  if (!digits) return [];
+
+  const q = query(
+    collection(db, "sipagMachines"),
+    where("isActive", "==", true),
+    where("operationalStatus", "==", "COM_COOPERADO"),
+    where("cooperadoCNPJ", "==", digits)
+  );
+
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => (d.data() as any)?.serial).filter(Boolean);
+}
+
 
 export async function transferSipagMachine(args: {
   serialRaw: string;

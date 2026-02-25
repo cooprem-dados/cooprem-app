@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { Html5Qrcode } from "html5-qrcode";
 import { Cooperado, Visit, Product } from '../types';
 import { useGeolocation } from '../hooks/useGeolocation';
 import { useFeedback } from "./ui/FeedbackProvider";
 import { User } from '../types';
-import { sipagEntrega, sipagDevolucao, sipagTroca, normalizeCNPJ, hasActiveSipagForCNPJ } from '../services/sipag';
+import { sipagEntrega, sipagDevolucao, sipagTroca, normalizeCNPJ, listSipagSerialsByCNPJ } from '../services/sipag';
 
 interface VisitFormProps {
   user: User;
@@ -80,8 +81,16 @@ const VisitForm: React.FC<VisitFormProps> = ({
   const [sipagSerialTrocaSai, setSipagSerialTrocaSai] = useState('');
   const [sipagSerialTrocaEntra, setSipagSerialTrocaEntra] = useState('');
   const [sipagJustificativa, setSipagJustificativa] = useState('');
-  const [checkingCoopSipag, setCheckingCoopSipag] = useState(false);
   const [coopHasSipag, setCoopHasSipag] = useState(false);
+  const [sipagCoopSerials, setSipagCoopSerials] = useState<string[]>([]);
+  const [sipagCoopSerialsLoading, setSipagCoopSerialsLoading] = useState(false);
+  const sipagCoopCacheRef = useRef<Record<string, { has: boolean; serials: string[]; at: number }>>({});
+  const SIPAG_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+  const [sipagEntregaScannerOpen, setSipagEntregaScannerOpen] = useState(false);
+  const [sipagEntregaScannerError, setSipagEntregaScannerError] = useState<string>("");
+  const sipagEntregaScannerRef = useRef<Html5Qrcode | null>(null);
+  const sipagEntregaLastScanRef = useRef<{ text: string; at: number } | null>(null);
 
   // Helpers for search
   const normalizeText = (v: any) =>
@@ -161,10 +170,77 @@ const VisitForm: React.FC<VisitFormProps> = ({
       setSipagSerialTrocaSai("");
       setSipagSerialTrocaEntra("");
       setSipagJustificativa("");
-      setCheckingCoopSipag(false);
       setCoopHasSipag(false);
+      setSipagEntregaScannerOpen(false);
+      setSipagEntregaScannerError("");
     }
   }, [selectedProducts]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const stopScanner = async () => {
+      if (sipagEntregaScannerRef.current) {
+        try {
+          await sipagEntregaScannerRef.current.stop();
+        } catch {
+          // ignore
+        }
+        try {
+          await sipagEntregaScannerRef.current.clear();
+        } catch {
+          // ignore
+        }
+        sipagEntregaScannerRef.current = null;
+      }
+    };
+
+    const startScanner = async () => {
+      setSipagEntregaScannerError("");
+      const id = "sipag-entrega-scanner";
+      if (!sipagEntregaScannerRef.current) {
+        sipagEntregaScannerRef.current = new Html5Qrcode(id);
+      }
+
+      try {
+        await sipagEntregaScannerRef.current.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 240, height: 240 } },
+          (decodedText) => {
+            const now = Date.now();
+            const last = sipagEntregaLastScanRef.current;
+            if (last && last.text === decodedText && now - last.at < 1500) return;
+            sipagEntregaLastScanRef.current = { text: decodedText, at: now };
+
+            const next = (decodedText || "").trim().toUpperCase();
+            if (next) {
+              setSipagSerialEntrega(next);
+              toast.success("Serial lido.");
+              setSipagEntregaScannerOpen(false);
+            }
+          },
+          () => {
+            // ignore scan errors
+          }
+        );
+      } catch (e: any) {
+        if (!cancelled) {
+          setSipagEntregaScannerError(e?.message || "Erro ao acessar a câmera.");
+        }
+      }
+    };
+
+    if (sipagEntregaScannerOpen) {
+      startScanner();
+    } else {
+      stopScanner();
+    }
+
+    return () => {
+      cancelled = true;
+      stopScanner();
+    };
+  }, [sipagEntregaScannerOpen, toast]);
 
   // Options shown in dropdown:
   // - If remote search is enabled: show remote results only (already limited to 20)
@@ -209,10 +285,7 @@ const VisitForm: React.FC<VisitFormProps> = ({
     }
   }, [sipagAction]);
 
-  useEffect(() => {
-    const needsCheck = selectedProducts.includes(Product.SIPAG_MAQUINA);
-    if (!needsCheck) return;
-
+  const fetchSipagSerialsForCoop = async () => {
     const digits = normalizeCNPJ(
       sipagCnpj ||
       selectedCooperado?.document ||
@@ -220,29 +293,42 @@ const VisitForm: React.FC<VisitFormProps> = ({
       ""
     );
 
-    if (digits.length !== 14) {
+    if (!digits) {
+      setSipagCoopSerials([]);
       setCoopHasSipag(false);
+      toast.warning("Identificador do cooperado inválido.");
       return;
     }
 
-    let cancelled = false;
-    const t = setTimeout(async () => {
-      try {
-        setCheckingCoopSipag(true);
-        const ok = await hasActiveSipagForCNPJ(digits);
-        if (!cancelled) setCoopHasSipag(ok);
-      } catch {
-        if (!cancelled) setCoopHasSipag(false);
-      } finally {
-        if (!cancelled) setCheckingCoopSipag(false);
-      }
-    }, 350);
+    setSipagCoopSerialsLoading(true);
+    const cached = sipagCoopCacheRef.current[digits];
+    if (cached && (Date.now() - cached.at) < SIPAG_CACHE_TTL_MS) {
+      setSipagCoopSerials(cached.serials);
+      setCoopHasSipag(cached.serials.length > 0);
+      setSipagCoopSerialsLoading(false);
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [selectedProducts, sipagCnpj, selectedCooperado, manualCoop.document]);
+    try {
+      const rows = await listSipagSerialsByCNPJ(digits);
+      setSipagCoopSerials(rows);
+      setCoopHasSipag(rows.length > 0);
+      sipagCoopCacheRef.current[digits] = {
+        has: rows.length > 0,
+        serials: rows,
+        at: Date.now(),
+      };
+      if (rows.length === 0) {
+        toast.warning("Nenhuma máquina vinculada encontrada.");
+      }
+    } catch (e: any) {
+      setSipagCoopSerials([]);
+      setCoopHasSipag(false);
+      toast.error(e?.message || "Erro ao verificar vínculo.");
+    } finally {
+      setSipagCoopSerialsLoading(false);
+    }
+  };
 
   // If prefilled cooperado, lock input and show value as "nome / documento"
   /*
@@ -650,25 +736,30 @@ const VisitForm: React.FC<VisitFormProps> = ({
 
                     <button type="button"
                       onClick={() => setSipagAction('TROCA')}
-                      disabled={!coopHasSipag || checkingCoopSipag}
-                      title={!coopHasSipag ? "Cooperado sem SIPAG vinculada" : (checkingCoopSipag ? "Verificando vínculo" : "")}
-                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${sipagAction === 'TROCA' ? 'bg-[#005058] text-white' : 'bg-white border border-gray-200 text-gray-700'} ${(!coopHasSipag || checkingCoopSipag) ? 'opacity-50 cursor-not-allowed bg-gray-100 text-gray-400 border-gray-200' : 'hover:bg-gray-50'}`}>
+                      title={!coopHasSipag ? "Cooperado sem SIPAG vinculada" : (sipagCoopSerialsLoading ? "Verificando vínculo" : "")}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${sipagAction === 'TROCA' ? 'bg-[#005058] text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
                       Troca
                     </button>
 
                     <button type="button"
                       onClick={() => setSipagAction('DEVOLUCAO')}
-                      disabled={!coopHasSipag || checkingCoopSipag}
-                      title={!coopHasSipag ? "Cooperado sem SIPAG vinculada" : (checkingCoopSipag ? "Verificando vínculo" : "")}
-                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${sipagAction === 'DEVOLUCAO' ? 'bg-[#005058] text-white' : 'bg-white border border-gray-200 text-gray-700'} ${(!coopHasSipag || checkingCoopSipag) ? 'opacity-50 cursor-not-allowed bg-gray-100 text-gray-400 border-gray-200' : 'hover:bg-gray-50'}`}>
+                      title={!coopHasSipag ? "Cooperado sem SIPAG vinculada" : (sipagCoopSerialsLoading ? "Verificando vínculo" : "")}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-colors ${sipagAction === 'DEVOLUCAO' ? 'bg-[#005058] text-white' : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
                       Devolução
                     </button>
                   </div>
 
                   {(sipagAction === 'DEVOLUCAO' || sipagAction === 'TROCA') && (
                     <div className="mt-3">
-                      {checkingCoopSipag ? (
-                        <p className="text-xs text-gray-500">Verificando vínculo da SIPAG...</p>
+                      <button
+                        type="button"
+                        onClick={fetchSipagSerialsForCoop}
+                        className="px-3 py-2 rounded-lg border border-gray-200 text-xs text-gray-700 hover:bg-gray-50"
+                      >
+                        Verificar vínculo
+                      </button>
+                      {sipagCoopSerialsLoading ? (
+                        <p className="text-xs text-gray-500 mt-2">Verificando vínculo da SIPAG...</p>
                       ) : !coopHasSipag ? (
                         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                           Cooperado sem máquina SIPAG vinculada. Troca/Devolução bloqueadas.
@@ -709,6 +800,15 @@ const VisitForm: React.FC<VisitFormProps> = ({
                         className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
                         placeholder="Serial da máquina"
                       />
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => setSipagEntregaScannerOpen(true)}
+                          className="px-3 py-2 rounded-lg border border-gray-200 text-xs text-gray-700 hover:bg-gray-50"
+                        >
+                          Ler QRCode (câmera)
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -722,6 +822,22 @@ const VisitForm: React.FC<VisitFormProps> = ({
                         className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
                         placeholder="Serial da máquina"
                       />
+                      {sipagCoopSerialsLoading ? (
+                        <div className="mt-2 text-xs text-gray-500">Carregando máquinas vinculadas...</div>
+                      ) : sipagCoopSerials.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {sipagCoopSerials.map((s) => (
+                            <button
+                              key={s}
+                              type="button"
+                              onClick={() => setSipagSerialDevolucao(s)}
+                              className="px-2 py-1 rounded-lg border border-gray-200 text-xs text-gray-700 hover:bg-gray-50"
+                            >
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   )}
 
@@ -736,6 +852,22 @@ const VisitForm: React.FC<VisitFormProps> = ({
                           className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200"
                           placeholder="Serial devolvida"
                         />
+                        {sipagCoopSerialsLoading ? (
+                          <div className="mt-2 text-xs text-gray-500">Carregando máquinas vinculadas...</div>
+                        ) : sipagCoopSerials.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {sipagCoopSerials.map((s) => (
+                              <button
+                                key={s}
+                                type="button"
+                                onClick={() => setSipagSerialTrocaSai(s)}
+                                className="px-2 py-1 rounded-lg border border-gray-200 text-xs text-gray-700 hover:bg-gray-50"
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-gray-600">Serial que sai do estoque → cooperado</label>
@@ -769,6 +901,48 @@ const VisitForm: React.FC<VisitFormProps> = ({
           </button>
         </form>
       </div>
+
+      {sipagEntregaScannerOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg p-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs uppercase tracking-widest text-gray-400">Leitor de QRCode</div>
+                <div className="text-lg font-semibold text-gray-800">SIPAG - Entrega</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSipagEntregaScannerOpen(false)}
+                className="text-gray-400 hover:text-gray-700 text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <div id="sipag-entrega-scanner" className="w-full rounded-xl overflow-hidden bg-black/10 border border-gray-200 min-h-[240px]" />
+              {sipagEntregaScannerError && (
+                <div className="mt-3 text-sm text-red-500">
+                  {sipagEntregaScannerError}
+                </div>
+              )}
+              <div className="mt-3 text-xs text-gray-500">
+                A leitura é contínua. O serial será preenchido automaticamente.
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSipagEntregaScannerOpen(false)}
+                className="px-4 py-2 rounded-xl bg-gray-100 text-gray-700 hover:bg-gray-200 text-sm"
+              >
+                Sair
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

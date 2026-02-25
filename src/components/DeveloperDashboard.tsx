@@ -115,6 +115,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   const [sipagReaderError, setSipagReaderError] = useState<string>("");
   const sipagReaderInputRef = useRef<HTMLInputElement | null>(null);
   const [sipagAutoAdding, setSipagAutoAdding] = useState(false);
+  const [sipagScanMode, setSipagScanMode] = useState<"add" | "transfer" | "inactive">("add");
   const sipagScannerRef = useRef<Html5Qrcode | null>(null);
   const sipagLastScanRef = useRef<{ text: string; at: number } | null>(null);
 
@@ -213,7 +214,10 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     }
   }, [sipagReaderOpen]);
 
-  const handleSipagRegister = async (serialRaw: string, opts?: { setInput?: boolean }) => {
+  const handleSipagRegister = async (
+    serialRaw: string,
+    opts?: { setInput?: boolean; mode?: "add" | "transfer" | "inactive" }
+  ) => {
     const serial = (serialRaw || "").trim().toUpperCase();
     if (!serial || sipagAutoAdding) return;
 
@@ -225,18 +229,39 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     }
     sipagLastScanRef.current = { text: serial, at: now };
 
+    const mode = opts?.mode ?? sipagScanMode;
     setSipagAutoAdding(true);
     try {
-      await addSipagMachine(
-        serial,
-        { uid: props.currentUser.id, name: props.currentUser.name },
-        { notes: newSipagNotes }
-      );
-      if (opts?.setInput !== false) {
-        setNewSipagSerial(serial);
+      if (mode === "add") {
+        await addSipagMachine(
+          serial,
+          { uid: props.currentUser.id, name: props.currentUser.name },
+          { notes: newSipagNotes }
+        );
+        if (opts?.setInput !== false) {
+          setNewSipagSerial(serial);
+        }
+        toast.success(`SIPAG ${serial} adicionada ao estoque (PA 99).`);
+        refreshSipag();
+      } else if (mode === "transfer") {
+        await transferSipagMachine({
+          serialRaw: serial,
+          toPA: transferToPA,
+          reason: transferReason,
+          by: { uid: props.currentUser.id, name: props.currentUser.name },
+        });
+        toast.success(`Transferência registrada (${serial} → PA ${transferToPA}).`);
+        refreshSipag();
+      } else if (mode === "inactive") {
+        await deactivateSipagMachine({
+          serialRaw: serial,
+          reason: inactiveReason,
+          note: inactiveNote,
+          by: { uid: props.currentUser.id, name: props.currentUser.name },
+        });
+        toast.success(`SIPAG ${serial} inativada.`);
+        refreshSipag();
       }
-      toast.success(`SIPAG ${serial} adicionada ao estoque (PA 99).`);
-      refreshSipag();
     } catch (e: any) {
       console.error(e);
       toast.error(e?.message || "Erro ao adicionar SIPAG.");
@@ -2105,30 +2130,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
         {tab === "SIPAG" && (
           <div className="space-y-6">
 
-            {/* Filtro por PA */}
-            <div className="flex items-end gap-3 flex-wrap border border-gray-800 rounded-2xl p-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
-              <div>
-                <label className="text-xs text-gray-400">PA (99 = Estoque)</label>
-                <select
-                  value={sipagFilterPA}
-                  onChange={(e) => setSipagFilterPA(e.target.value)}
-                  className="bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
-                >
-                  {paOptions.map((pa) => (
-                    <option key={pa} value={pa}>
-                      {pa === "99" ? "PA 99 (Estoque)" : `PA ${pa}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <button
-                onClick={refreshSipag}
-                className="px-4 py-2 rounded-xl bg-gray-900 text-white border border-gray-700 hover:bg-black"
-              >
-                Atualizar
-              </button>
-            </div>
+            {/* Filtro por PA removido */}
 
             {/* Entrada no estoque */}
             <div className="border border-gray-800 rounded-2xl p-4 bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
@@ -2147,14 +2149,20 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                   <div className="mt-2 flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setSipagScannerOpen(true)}
+                      onClick={() => {
+                        setSipagScanMode("add");
+                        setSipagScannerOpen(true);
+                      }}
                       className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
                     >
                       Ler com câmera
                     </button>
                     <button
                       type="button"
-                      onClick={() => setSipagReaderOpen(true)}
+                      onClick={() => {
+                        setSipagScanMode("add");
+                        setSipagReaderOpen(true);
+                      }}
                       className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
                     >
                       Ler com leitor
@@ -2207,6 +2215,28 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                     className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
                     placeholder="Serial da máquina"
                   />
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSipagScanMode("transfer");
+                        setSipagScannerOpen(true);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                    >
+                      Ler com câmera
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSipagScanMode("transfer");
+                        setSipagReaderOpen(true);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                    >
+                      Ler com leitor
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -2285,6 +2315,28 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                     className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-200"
                     placeholder="Serial da máquina"
                   />
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSipagScanMode("inactive");
+                        setSipagScannerOpen(true);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                    >
+                      Ler com câmera
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSipagScanMode("inactive");
+                        setSipagReaderOpen(true);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs border border-gray-700"
+                    >
+                      Ler com leitor
+                    </button>
+                  </div>
                 </div>
 
                 <div>
@@ -2479,7 +2531,11 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-xs uppercase tracking-widest text-gray-400">Leitor de código</div>
-                <div className="text-lg font-semibold text-white">SIPAG - Serial</div>
+                <div className="text-lg font-semibold text-white">
+                  {sipagScanMode === "add" && "SIPAG - Serial (Entrada PA 99)"}
+                  {sipagScanMode === "transfer" && "SIPAG - Serial (Transferência)"}
+                  {sipagScanMode === "inactive" && "SIPAG - Serial (Inativação)"}
+                </div>
               </div>
               <button
                 type="button"
@@ -2498,7 +2554,11 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                 </div>
               )}
               <div className="mt-3 text-xs text-gray-400">
-                A leitura é contínua. O serial será preenchido no campo automaticamente.
+                A leitura é contínua. O serial será processado para{" "}
+                {sipagScanMode === "add" && "entrada no PA 99"}
+                {sipagScanMode === "transfer" && `transferência para o PA ${transferToPA}`}
+                {sipagScanMode === "inactive" && "inativação"}
+                .
               </div>
             </div>
 
@@ -2521,7 +2581,11 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-xs uppercase tracking-widest text-gray-400">Leitor de código</div>
-                <div className="text-lg font-semibold text-white">SIPAG - Serial (Leitor)</div>
+                <div className="text-lg font-semibold text-white">
+                  {sipagScanMode === "add" && "SIPAG - Serial (Entrada PA 99)"}
+                  {sipagScanMode === "transfer" && "SIPAG - Serial (Transferência)"}
+                  {sipagScanMode === "inactive" && "SIPAG - Serial (Inativação)"}
+                </div>
               </div>
               <button
                 type="button"
@@ -2538,23 +2602,54 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                 ref={sipagReaderInputRef}
                 value={sipagReaderBuffer}
                 onChange={(e) => setSipagReaderBuffer(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleSipagRegister(sipagReaderBuffer, { setInput: false });
-                          setSipagReaderBuffer("");
-                        }
-                      }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSipagRegister(sipagReaderBuffer, { setInput: false, mode: sipagScanMode });
+                    setSipagReaderBuffer("");
+                  }
+                }}
                 className="mt-2 w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200"
                 placeholder="Aguardando leitura..."
               />
+              {sipagScanMode === "transfer" && (
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-400">Para PA</label>
+                    <select
+                      value={transferToPA}
+                      onChange={(e) => setTransferToPA(e.target.value)}
+                      className="mt-1 w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200"
+                    >
+                      {paOptions.map((pa) => (
+                        <option key={pa} value={pa}>
+                          {pa === "99" ? "99 (Estoque)" : `PA ${pa}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400">Motivo (opcional)</label>
+                    <input
+                      value={transferReason}
+                      onChange={(e) => setTransferReason(e.target.value)}
+                      className="mt-1 w-full bg-gray-950 border border-gray-800 rounded-xl px-3 py-2 text-sm text-gray-200"
+                      placeholder="Ex: devolução, troca..."
+                    />
+                  </div>
+                </div>
+              )}
               {sipagReaderError && (
                 <div className="mt-3 text-sm text-red-400">
                   {sipagReaderError}
                 </div>
               )}
               <div className="mt-3 text-xs text-gray-400">
-                A leitura é contínua. A cada leitura com Enter, o serial é registrado no PA 99.
+                A leitura é contínua. A cada leitura com Enter, o serial é processado para{" "}
+                {sipagScanMode === "add" && "entrada no PA 99"}
+                {sipagScanMode === "transfer" && `transferência para o PA ${transferToPA}`}
+                {sipagScanMode === "inactive" && "inativação"}
+                .
               </div>
             </div>
 
