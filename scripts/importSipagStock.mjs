@@ -42,9 +42,10 @@ const first = rows[0];
 const keys = Object.keys(first).map((k) => k.toLowerCase().trim());
 const serialKey = Object.keys(first).find((k) => k.toLowerCase().trim() === "serial");
 const paKey = Object.keys(first).find((k) => k.toLowerCase().trim() === "pa");
+const coopKey = Object.keys(first).find((k) => k.toLowerCase().trim() === "cooperadocnpj");
 
-if (!serialKey || !paKey) {
-  console.error("Colunas obrigatórias não encontradas. Precisa ter: serial, PA");
+if (!serialKey || !paKey || !coopKey) {
+  console.error("Colunas obrigatórias não encontradas. Precisa ter: serial, PA, cooperadoCNPJ");
   console.error("Colunas encontradas:", keys.join(", "));
   process.exit(1);
 }
@@ -53,6 +54,10 @@ let total = 0;
 let created = 0;
 let skipped = 0;
 let errors = 0;
+let invalidPA = 0;
+let pa99WithCoop = 0;
+
+const VALID_PAS = new Set(["0", "1", "2", "4", "5", "99"]);
 
 const writer = db.bulkWriter();
 writer.onWriteError((err) => {
@@ -68,18 +73,28 @@ writer.onWriteError((err) => {
 for (const row of rows) {
   const serialRaw = String(row[serialKey] ?? "").trim().toUpperCase();
   const paRaw = String(row[paKey] ?? "").trim();
+  const coopRaw = String(row[coopKey] ?? "").trim();
   if (!serialRaw || !paRaw) continue;
 
+  if (!VALID_PAS.has(paRaw)) {
+    invalidPA++;
+    continue;
+  }
+
   total++;
-  const status = paRaw === "99" ? "ESTOQUE" : "ALOCADA";
+  const hasCoop = !!coopRaw;
+  if (paRaw === "99" && hasCoop) pa99WithCoop++;
+  const status = paRaw === "99" && !hasCoop ? "ESTOQUE" : "ALOCADA";
+  const operationalStatus = hasCoop ? "COM_COOPERADO" : "EM_ESTOQUE";
+  const cooperadoCNPJ = hasCoop ? coopRaw.replace(/\D/g, "") : null;
 
   const ref = db.collection("sipagMachines").doc(serialRaw);
   writer.create(ref, {
     serial: serialRaw,
     currentPA: paRaw,
     status,
-    operationalStatus: "EM_ESTOQUE",
-    cooperadoCNPJ: null,
+    operationalStatus,
+    cooperadoCNPJ,
     isActive: true,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -90,4 +105,4 @@ for (const row of rows) {
 await writer.close();
 
 console.log("Importação concluída");
-console.log({ total, created, skipped, errors });
+console.log({ total, created, skipped, errors, invalidPA, pa99WithCoop });

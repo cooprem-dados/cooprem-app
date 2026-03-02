@@ -7,7 +7,7 @@ export async function fetchInitialData(user: User) {
   const isDev = user.role === "Desenvolvedor" || user.role === "Admin";
 
   const visitsQ = isDev
-    ? query(collection(db, "visits"), orderBy("date", "desc"), limit(200))
+    ? query(collection(db, "visits"), orderBy("date", "desc"), limit(1000))
     : query(
         collection(db, "visits"),
         where("manager.id", "==", user.id),

@@ -589,6 +589,8 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
   const [reportGerente, setReportGerente] = useState<string>('');
   const [reportProduto, setReportProduto] = useState<string>('');
   const [reportBusca, setReportBusca] = useState<string>('');
+  const [reportVisits, setReportVisits] = useState<Visit[]>([]);
+  const [reportVisitsLoading, setReportVisitsLoading] = useState(false);
   const [reportStart, setReportStart] = useState<string>(() => {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -687,7 +689,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
     const q = normalizeTextStrict(appliedBusca);
     const qDigits = appliedBusca.replace(/\D/g, '');
 
-    return props.visits.filter(v => {
+    return reportVisits.filter(v => {
       if (s && v.date < s) return false;
       if (e && v.date > e) return false;
 
@@ -723,7 +725,7 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
 
       return true;
     });
-  }, [props.visits, appliedPA, appliedGerente, appliedProduto, appliedBusca, appliedStart, appliedEnd]);
+  }, [reportVisits, appliedPA, appliedGerente, appliedProduto, appliedBusca, appliedStart, appliedEnd]);
 
   //graficos visitas por gerente
   const visitsByManager = useMemo(() => {
@@ -972,6 +974,32 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
 
   const canApplyReportFilters = reportError === "";
 
+  async function fetchReportVisits(startStr: string, endStr: string) {
+    const start = new Date(`${startStr}T00:00:00.000`);
+    const end = new Date(`${endStr}T23:59:59.999`);
+    setReportVisitsLoading(true);
+    try {
+      const q = query(
+        collection(db, "visits"),
+        where("date", ">=", Timestamp.fromDate(start)),
+        where("date", "<=", Timestamp.fromDate(end)),
+        orderBy("date", "desc")
+      );
+      const snap = await getDocs(q);
+      const rows = snap.docs.map((d) => {
+        const data = d.data() as any;
+        return { ...data, id: d.id, date: toDate(data.date) } as Visit;
+      });
+      setReportVisits(rows);
+    } catch (e: any) {
+      console.error("Erro ao carregar visitas do relatório:", e);
+      toast.error(e?.message || "Erro ao carregar visitas do relatório.");
+      setReportVisits([]);
+    } finally {
+      setReportVisitsLoading(false);
+    }
+  }
+
   function downloadCSV() {
     const slug = (s: string) =>
       s
@@ -1182,8 +1210,8 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
               {/* ✅ novo: aplica filtros */}
               <button
                 type="button"
-                disabled={!canApplyReportFilters}
-                onClick={() => {
+                disabled={!canApplyReportFilters || reportVisitsLoading}
+                onClick={async () => {
                   // reforço: se inválido, não aplica
                   if (!canApplyReportFilters) return;
 
@@ -1193,19 +1221,21 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
                   setAppliedBusca(reportBusca);
                   setAppliedStart(reportStart);
                   setAppliedEnd(reportEnd);
+
+                  await fetchReportVisits(reportStart, reportEnd);
                 }}
                 className={`text-xs px-4 py-2 rounded-lg font-bold transition-all
                   ${canApplyReportFilters
                     ? "bg-indigo-600 hover:bg-indigo-700"
                     : "bg-gray-600 opacity-60 cursor-not-allowed"
-                  }`}
+                }`}
                 title={
                   canApplyReportFilters
                     ? "Aplica os filtros para recalcular a tabela/estatísticas"
                     : reportError || "Preencha as datas para aplicar"
                 }
               >
-                ✅ Aplicar filtros
+                {reportVisitsLoading ? "Carregando..." : "✅ Aplicar filtros"}
               </button>
 
 
@@ -1261,6 +1291,12 @@ const DeveloperDashboard: React.FC<DeveloperDashboardProps> = (props) => {
               </button>
             </div>
           </div>
+
+          {reportVisits.length === 0 && !reportVisitsLoading && (
+            <div className="mb-4 text-sm text-amber-200 bg-amber-900/30 border border-amber-800 rounded-lg px-4 py-3">
+              Nenhum dado carregado. Clique em <b>Aplicar filtros</b> para buscar as visitas do período.
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
             <div>
